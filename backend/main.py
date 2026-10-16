@@ -17,6 +17,10 @@ from core.app_config import PRODUCT_NAME  # noqa: E402
 
 enable_fault_handler()
 
+# NOVA Voice: product analytics stay off unless the user explicitly sets
+# OMNIVOICE_ANALYTICS_DISABLED=0 in the environment.
+os.environ.setdefault("OMNIVOICE_ANALYTICS_DISABLED", "1")
+
 # PyInstaller re-executes this entry module when the frozen backend binary is
 # launched. Nested operation supervisors therefore dispatch here, before math,
 # logging, FastAPI, torch, or any application initialization. Source launches
@@ -775,14 +779,17 @@ def _phase_a_finalize() -> None:
     global _phase_a_finalized
     if _phase_a_finalized:
         return
+    from core.feature_profile import mcp_enabled as _nova_mcp_enabled
+    from core.feature_profile import router_enabled as _nova_router_enabled
     for _mod in _router_modules:
-        app.include_router(_mod.router)
+        if _nova_router_enabled(_mod.__name__):
+            app.include_router(_mod.router)
 
     # MCP server sub-mounted at /mcp; its session manager is stashed on
     # app.state for Phase B to run. Opt-out via OMNIVOICE_MCP_DISABLE=1;
     # best-effort (SystemExit included, #1156) so a missing mcp package
     # never breaks startup.
-    if os.environ.get("OMNIVOICE_MCP_DISABLE", "").strip().lower() not in ("1", "true", "yes", "on"):
+    if _nova_mcp_enabled() and os.environ.get("OMNIVOICE_MCP_DISABLE", "").strip().lower() not in ("1", "true", "yes", "on"):
         try:
             from mcp_server import mount_mcp
             mount_mcp(app)

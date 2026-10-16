@@ -40,6 +40,9 @@ const RENDERER_DIR = join(here, '../renderer');
 const BACKGROUND = '#0a0a0a';
 const OVERLAY = { color: '#00000000', symbolColor: '#737373', height: 52 };
 
+// NOVA Voice has no update feed of its own yet; never follow the upstream one.
+process.env.VOICESTUDIO_DISABLE_UPDATER ??= '1';
+
 installAppIdentity(app);
 registerAppScheme();
 

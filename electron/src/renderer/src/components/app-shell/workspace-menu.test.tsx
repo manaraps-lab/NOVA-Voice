@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 
-const route = vi.hoisted(() => ({ pathname: '/gallery' }));
+const route = vi.hoisted(() => ({ pathname: '/design' }));
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: ({ select }: any) => select({ location: route }),
   Link: ({ to, activeProps: _activeProps, children, ...props }: any) => (
@@ -14,24 +14,20 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/lib/store/workspace', () => ({ setWorkspace: vi.fn() }));
 import { WorkspaceNavigation } from './workspace-menu';
 
-it('opens the current workflow, lets users collapse it, and follows route changes', () => {
-  const { rerender } = render(<WorkspaceNavigation />);
+it('shows only the text-to-speech workspaces and lets users collapse the group', () => {
+  render(<WorkspaceNavigation />);
   const voice = screen.getByRole('button', { name: 'nav.voice' });
   expect(voice).toHaveAttribute('aria-expanded', 'true');
-  expect(screen.getByRole('link', { name: 'nav.gallery' })).toHaveAttribute('href', '/gallery');
-  expect(screen.getByRole('link', { name: 'workflows.title' })).toHaveAttribute('href', '/calls');
+  expect(screen.getByRole('link', { name: 'designWorkspace.title' })).toHaveAttribute(
+    'href',
+    '/design',
+  );
+  for (const removed of ['workflows.title', 'nav.gallery', 'nav.stories', 'nav.dub']) {
+    expect(screen.queryByRole('link', { name: removed })).toBeNull();
+    expect(screen.queryByRole('button', { name: removed })).toBeNull();
+  }
   fireEvent.click(voice);
   expect(voice).toHaveAttribute('aria-expanded', 'false');
-  route.pathname = '/audiobook';
-  rerender(<WorkspaceNavigation />);
-  expect(screen.getByRole('button', { name: 'nav.stories' })).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  );
-  expect(screen.getByRole('link', { name: 'audiobook.title' })).toHaveAttribute(
-    'href',
-    '/audiobook',
-  );
 });
 
 it('keeps grouped destinations reachable from the compact rail', async () => {
@@ -41,7 +37,10 @@ it('keeps grouped destinations reachable from the compact rail', async () => {
     'href',
     '/clone',
   );
-  expect(screen.getByRole('link', { name: 'nav.gallery' })).toHaveAttribute('href', '/gallery');
+  expect(screen.getByRole('link', { name: 'designWorkspace.title' })).toHaveAttribute(
+    'href',
+    '/design',
+  );
 });
 
 it('opens a compact group for a mouse hover while ignoring touch hover', async () => {
@@ -55,7 +54,7 @@ it('opens a compact group for a mouse hover while ignoring touch hover', async (
 });
 
 it('keeps the compact flyout mounted until navigation changes the route', async () => {
-  route.pathname = '/gallery';
+  route.pathname = '/design';
   const { rerender } = render(<WorkspaceNavigation compact />);
   fireEvent.click(screen.getByRole('button', { name: 'nav.voice' }));
   const clone = await screen.findByRole('link', { name: 'nav.clone_short' });
@@ -67,9 +66,11 @@ it('keeps the compact flyout mounted until navigation changes the route', async 
 });
 
 it('closes the compact flyout when choosing the current route again', async () => {
-  route.pathname = '/gallery';
+  route.pathname = '/design';
   render(<WorkspaceNavigation compact />);
   fireEvent.click(screen.getByRole('button', { name: 'nav.voice' }));
-  fireEvent.click(await screen.findByRole('link', { name: 'nav.gallery' }));
-  await waitFor(() => expect(screen.queryByRole('link', { name: 'nav.gallery' })).toBeNull());
+  fireEvent.click(await screen.findByRole('link', { name: 'designWorkspace.title' }));
+  await waitFor(() =>
+    expect(screen.queryByRole('link', { name: 'designWorkspace.title' })).toBeNull(),
+  );
 });

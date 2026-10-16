@@ -8,7 +8,7 @@ const english = JSON.parse(await readFile(new URL('en.json', directory), 'utf8')
 const placeholders = (text) =>
   [...text.matchAll(/{{\s*([^}]+?)\s*}}/g)].map((match) => match[1]).sort();
 const protectedNames = [
-  'VoiceStudio',
+  'NOVA Voice',
   'Hugging Face',
   'OmniVoice',
   'Faster-Whisper',

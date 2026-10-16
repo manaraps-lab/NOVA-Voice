@@ -1,6 +1,6 @@
 {
-  "productName": "VoiceStudio",
-  "appId": "com.voicestudio.desktop",
+  "productName": "NOVA Voice",
+  "appId": "app.novavoice.desktop",
   "ports": {
     "backend": 3900,
     "web": 3901,

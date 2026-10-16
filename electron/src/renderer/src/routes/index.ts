@@ -2,8 +2,6 @@ import { createRootRoute, createRoute, lazyRouteComponent, redirect } from '@tan
 import { AppShell } from '@/components/app-shell/app-shell';
 import { readLastSettingsRoute } from '@/lib/settings-route';
 
-const HomePage = lazyRouteComponent(() => import('@/features/home/home-page'), 'HomePage');
-
 const ClonePage = lazyRouteComponent(() => import('@/features/clone/clone-page'), 'ClonePage');
 const DesignPage = lazyRouteComponent(() => import('@/features/design/design-page'), 'DesignPage');
 const DubPage = lazyRouteComponent(() => import('@/features/dub/dub-page'), 'DubPage');
@@ -49,10 +47,13 @@ const ProPage = lazyRouteComponent(() => import('@/features/pro/pro-page'), 'Pro
 
 export const rootRoute = createRootRoute({ component: AppShell });
 
+// NOVA Voice opens straight on the text-to-speech workspace.
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: HomePage,
+  beforeLoad: () => {
+    throw redirect({ to: '/clone' });
+  },
 });
 
 export const savedVoicesRoute = createRoute({

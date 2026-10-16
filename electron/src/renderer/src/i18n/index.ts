@@ -47,13 +47,9 @@ function initialLocale(): AppLocale {
   } catch {
     // Storage can be unavailable in hardened browser contexts.
   }
-  if (typeof navigator !== 'undefined') {
-    for (const candidate of navigator.languages || [navigator.language]) {
-      const locale = normalizeLocale(candidate);
-      if (locale) return locale;
-    }
-  }
-  return 'en';
+  // NOVA Voice is Arabic-first: ignore the system language unless the user
+  // picked another one in Settings.
+  return 'ar';
 }
 
 async function loadLocale(locale: AppLocale): Promise<void> {

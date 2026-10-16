@@ -2,20 +2,10 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/popover';
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
-  AudioLinesIcon,
   FingerprintIcon,
-  BookOpenIcon,
-  FolderIcon,
-  WrenchIcon,
-  LayersIcon,
-  LibraryIcon,
-  FilmIcon,
   WandSparklesIcon,
-  MicIcon,
   UsersRoundIcon,
   ChevronRightIcon,
-  BlocksIcon,
-  WorkflowIcon,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -39,7 +29,7 @@ type Destination = readonly [
     | '/calls'
     | '/integrations',
   label: string,
-  icon: typeof AudioLinesIcon,
+  icon: typeof FingerprintIcon,
   activate?: () => void,
 ];
 
@@ -49,22 +39,6 @@ const voiceDestinations: Destination[] = [
   ['/clone', 'nav.clone_short', FingerprintIcon, openSaved],
   ['/design', 'designWorkspace.title', WandSparklesIcon],
   ['/personas', 'nav.saved', UsersRoundIcon, openSaved],
-  ['/gallery', 'nav.gallery', LibraryIcon],
-];
-const storyDestinations: Destination[] = [
-  ['/stories', 'nav.stories', AudioLinesIcon],
-  ['/audiobook', 'audiobook.title', BookOpenIcon],
-];
-const dubDestinations: Destination[] = [
-  ['/dub', 'dubWorkspace.title', FilmIcon],
-  ['/batch', 'nav.batch_dub', LayersIcon],
-];
-const laterDestinations: Destination[] = [
-  ['/transcriptions', 'nav.transcribe', MicIcon],
-  ['/calls', 'workflows.title', WorkflowIcon],
-  ['/projects', 'projects.title', FolderIcon],
-  ['/tools', 'tools.title', WrenchIcon],
-  ['/integrations', 'integrationCatalog.title', BlocksIcon],
 ];
 
 const itemClass =
@@ -152,7 +126,7 @@ function NavigationGroup({
   pathname,
 }: {
   label: string;
-  icon: typeof AudioLinesIcon;
+  icon: typeof FingerprintIcon;
   children: Destination[];
   compact: boolean;
   pathname: string;
@@ -352,23 +326,6 @@ export function WorkspaceNavigation({ compact = false }: { compact?: boolean }) 
         compact={compact}
         pathname={pathname}
       />
-      <NavigationGroup
-        label="nav.stories"
-        icon={AudioLinesIcon}
-        children={storyDestinations}
-        compact={compact}
-        pathname={pathname}
-      />
-      <NavigationGroup
-        label="nav.dub"
-        icon={FilmIcon}
-        children={dubDestinations}
-        compact={compact}
-        pathname={pathname}
-      />
-      {laterDestinations.map((destination) => (
-        <NavigationLink key={destination[0]} destination={destination} compact={compact} />
-      ))}
     </nav>
   );
 }
