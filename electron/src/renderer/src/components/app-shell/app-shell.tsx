@@ -15,9 +15,20 @@ export function AppShell() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
+  // NOVA Voice's home is a single self-contained screen without the sidebar chrome.
+  const novaHome = pathname === '/';
   const shellOnly = pathname.startsWith('/settings') || pathname === '/pro';
   const macWorkspace = isMac() && !shellOnly;
   const SettingsWorkspace = pathname === '/settings/openapi' ? 'div' : 'main';
+  if (novaHome) {
+    return (
+      <div className="relative h-full">
+        <BackendGate repairDock={<RepairAgentDock />}>
+          <Outlet />
+        </BackendGate>
+      </div>
+    );
+  }
   return (
     <div
       className={cn(

@@ -150,6 +150,9 @@ function createWindow(): BrowserWindow {
       // ESM preload scripts (electron-vite emits .mjs) require an unsandboxed renderer.
       sandbox: false,
       nodeIntegration: false,
+      // Jobs keep rendering in the backend; the window must keep polling and
+      // updating its progress while minimised or behind other apps.
+      backgroundThrottling: false,
     },
   });
 

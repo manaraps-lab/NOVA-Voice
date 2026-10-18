@@ -33,6 +33,14 @@ TTS_ROUTERS: frozenset[str] = frozenset({
     "archetypes",      # voice design presets
     "pronunciation",   # pronunciation dictionary
     "auth",            # local session handling the UI expects
+    # Needed by the first-run wizard and shared UI widgets; without them the
+    # setup screens and the performance panel call endpoints that return 404.
+    "model_licenses",  # model install prepare/commit + licence acceptance
+    "media_tools",     # ffmpeg status/installation (audio conversion)
+    "batch",           # /batch/jobs polled by the status bar
+    "dictation",       # /dictation/* read by the setup wizard and settings
+    "projects",        # /projects read by the voice panels
+    "nova",            # NOVA Voice jobs: progress, pause/resume/cancel, device status
 })
 
 

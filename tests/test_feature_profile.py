@@ -24,7 +24,11 @@ def test_default_is_tts_only(monkeypatch):
     assert fp.router_enabled("api.routers.setup")
     assert not fp.router_enabled("api.routers.dub_core")
     assert not fp.router_enabled("api.routers.telephony_twilio")
-    assert not fp.router_enabled("api.routers.dictation")
+    assert fp.router_enabled("api.routers.model_licenses")
+    assert fp.router_enabled("api.routers.media_tools")
+    assert not fp.router_enabled("api.routers.calls")
+    assert not fp.router_enabled("api.routers.audiobook")
+    assert fp.router_enabled("api.routers.nova")
     assert not fp.mcp_enabled()
 
 

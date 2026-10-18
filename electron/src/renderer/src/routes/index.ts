@@ -2,7 +2,7 @@ import { createRootRoute, createRoute, lazyRouteComponent, redirect } from '@tan
 import { AppShell } from '@/components/app-shell/app-shell';
 import { readLastSettingsRoute } from '@/lib/settings-route';
 
-const ClonePage = lazyRouteComponent(() => import('@/features/clone/clone-page'), 'ClonePage');
+const NovaPage = lazyRouteComponent(() => import('@/features/nova/nova-page'), 'NovaPage');
 const DesignPage = lazyRouteComponent(() => import('@/features/design/design-page'), 'DesignPage');
 const DubPage = lazyRouteComponent(() => import('@/features/dub/dub-page'), 'DubPage');
 const BatchPage = lazyRouteComponent(() => import('@/features/batch/batch-page'), 'BatchPage');
@@ -51,9 +51,7 @@ export const rootRoute = createRootRoute({ component: AppShell });
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  beforeLoad: () => {
-    throw redirect({ to: '/clone' });
-  },
+  component: NovaPage,
 });
 
 export const savedVoicesRoute = createRoute({
@@ -68,7 +66,9 @@ export const savedVoicesRoute = createRoute({
 export const cloneRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/clone',
-  component: ClonePage,
+  beforeLoad: () => {
+    throw redirect({ to: '/' });
+  },
 });
 
 export const settingsRoute = createRoute({

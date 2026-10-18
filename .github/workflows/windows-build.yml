@@ -55,6 +55,20 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # NOVA Voice interface font (Cairo, OFL). Fetched at build time and bundled
+      # into the installer, so the app itself needs no internet to show it.
+      - name: Fetch Arabic interface font
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=electron/src/renderer/src/features/nova/fonts
+          mkdir -p "$dir"
+          base=https://cdn.jsdelivr.net/npm/@fontsource/cairo@5/files
+          for f in cairo-arabic-400-normal cairo-arabic-600-normal cairo-arabic-700-normal cairo-latin-400-normal cairo-latin-700-normal; do
+            curl -fsSL --retry 3 -o "$dir/$f.woff2" "$base/$f.woff2"
+          done
+          ls -l "$dir"
+
       # Informational: these show problems early but do not block the installer.
       - name: Type check (informational)
         continue-on-error: true
