@@ -236,3 +236,14 @@
 .nova-fit.is-ok { color: #31e08f; }
 .nova-fit.is-tight { color: #f2c14e; }
 .nova-fit.is-heavy { color: #ff7a6e; }
+
+/* Models button on the main screen */
+.nova-model-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 16px; border-radius: var(--nv-radius);
+  border: 1.5px solid var(--nv-line); background: var(--nv-card); color: var(--nv-ink); backdrop-filter: blur(10px);
+  font: inherit; font-weight: 600; cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.nova-model-toggle:hover, .nova-model-toggle.is-open { border-color: var(--nv-emerald); }
+.nova-model-toggle-text { flex: 1; text-align: start; }
+.nova-chev { transition: transform .15s ease; flex: none; }
+.nova-model-toggle.is-open .nova-chev { transform: rotate(180deg); }

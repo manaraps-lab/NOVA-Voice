@@ -6,6 +6,7 @@ import {
   Bell,
   BellOff,
   Check,
+  ChevronDown,
   Cpu,
   Download,
   Moon,
@@ -481,7 +482,8 @@ export function NovaPage() {
   const { progress } = job;
   const live = isActive(progress?.state);
   const stats = useDeviceStats(live);
-  const engines = useEngines(true, 5000);
+  const [showModels, setShowModels] = useState(false);
+  const engines = useEngines(true, showModels ? 3000 : 15000);
   const currentEngine = engines.rows?.find((r) => r.key === prefs.engine) ?? null;
   const engineReady = currentEngine ? currentEngine.available : true;
   const anyOnline = engines.rows ? engines.rows.some((r) => r.available) : null;
@@ -564,7 +566,7 @@ export function NovaPage() {
             type="button"
             className="nova-pill-btn"
             data-nosound
-            onClick={() => { sfx.click(); document.getElementById('nova-engine-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+            onClick={() => { sfx.click(); setShowModels((v) => !v); }}
             title={S.modelsTitle}
             aria-label={S.modelsTitle}
           >
@@ -618,7 +620,25 @@ export function NovaPage() {
 
       <main className="nova-main">
         <div className="nova-col-main">
-          <EnginePanel rows={engines.rows} selected={prefs.engine} locked={live} onSelect={(k) => set('engine', k)} onRefresh={engines.refresh} />
+          <button
+            type="button"
+            className={`nova-model-toggle${showModels ? ' is-open' : ''}`}
+            data-nosound
+            aria-expanded={showModels}
+            aria-controls="nova-engine-panel"
+            onClick={() => { sfx.click(); setShowModels((v) => !v); }}
+          >
+            <Dot on={currentEngine ? currentEngine.available : null} />
+            <Cpu size={18} />
+            <span className="nova-model-toggle-text">
+              {S.models}
+              {currentEngine ? <span className="nova-muted"> · {currentEngine.label}</span> : null}
+            </span>
+            <ChevronDown size={18} className="nova-chev" />
+          </button>
+          {showModels && (
+            <EnginePanel rows={engines.rows} selected={prefs.engine} locked={live} onSelect={(k) => set('engine', k)} onRefresh={engines.refresh} />
+          )}
 
           <section className="nova-card nova-text-card">
             <div className="nova-text-head">
@@ -656,7 +676,7 @@ export function NovaPage() {
             {!engineReady && currentEngine && (
               <p className="nova-warn" dir="auto">
                 {S.engineNotReady} {currentEngine.reason || S.notConnected}{' '}
-                <button type="button" className="nova-link" onClick={() => document.getElementById('nova-engine-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>{S.models}</button>
+                <button type="button" className="nova-link" onClick={() => setShowModels(true)}>{S.models}</button>
               </p>
             )}
             {currentEngine?.fit === 'heavy' && engineReady && (

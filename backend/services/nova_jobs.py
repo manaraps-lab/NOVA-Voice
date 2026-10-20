@@ -247,6 +247,184 @@ def _silence(sample_rate: int, ms: int, like):
     return torch.zeros(like.shape[:-1] + (n,), dtype=like.dtype)
 
 
+# ── Final polish: one voice, steady pace, even pauses ─────────────────────
+_SENT_END = ".!?؟۔…"
+_CLAUSE_END = "،,;؛:"
+_EDGE_MS = 30
+_CLOSERS = "\"'»”’)]}"
+
+
+def pause_ms_after(text: str, base_ms: int) -> int:
+    """Pause that follows a chunk, by how its text ended."""
+    t = (text or "").rstrip().rstrip(_CLOSERS).rstrip()
+    last = t[-1:]
+    if last and last in _SENT_END:
+        return int(base_ms)
+    if last and last in _CLAUSE_END:
+        return int(base_ms * 0.45)
+    return int(base_ms * 0.2)
+
+
+def _letters(text: str) -> int:
+    return sum(1 for c in (text or "") if c.isalnum())
+
+
+def trim_np(x, sr: int, keep_ms: int = 60):
+    """Strip the quiet lead-in and tail an engine leaves around one chunk."""
+    import numpy as np
+    if x.size == 0:
+        return x
+    peak = float(np.max(np.abs(x)))
+    if peak <= 0:
+        return x
+    loud = np.flatnonzero(np.abs(x) > peak * 0.01)
+    if loud.size == 0:
+        return x
+    keep = int(sr * keep_ms / 1000)
+    return x[max(0, int(loud[0]) - keep): min(x.size, int(loud[-1]) + 1 + keep)]
+
+
+def compress_gaps(x, sr: int, max_gap_ms: int = 500, keep_ms: int = 320):
+    """Shorten silences inside a chunk that run longer than ``max_gap_ms``."""
+    import numpy as np
+    hop = max(1, int(sr * 0.01))
+    n = x.size // hop
+    if n < 5:
+        return x
+    frames = np.abs(x[: n * hop]).reshape(n, hop).max(axis=1)
+    thr = max(float(frames.max()) * 0.012, 1e-4)
+    silent = frames < thr
+    min_run = max_gap_ms // 10
+    keep_f = keep_ms // 10
+    mask = np.ones(x.size, dtype=bool)
+    i = 0
+    while i < n:
+        if silent[i]:
+            j = i
+            while j < n and silent[j]:
+                j += 1
+            if j - i > min_run:
+                mask[(i + keep_f // 2) * hop:(j - keep_f // 2) * hop] = False
+            i = j
+        else:
+            i += 1
+    return x[mask]
+
+
+def _rms(x) -> float:
+    import numpy as np
+    if x.size == 0:
+        return 0.0
+    peak = float(np.max(np.abs(x)))
+    v = x[np.abs(x) > peak * 0.05]
+    return float(np.sqrt(np.mean(v.astype(np.float64) ** 2))) if v.size else 0.0
+
+
+def _fade(x, n: int):
+    import numpy as np
+    n = min(n, x.size // 2)
+    if n < 2:
+        return x
+    y = x.copy()
+    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    y[:n] *= ramp
+    y[-n:] *= ramp[::-1]
+    return y
+
+
+def polish_clips(clips, sr: int, pause_ms: int, tempo_fn=None):
+    """Join rendered chunks into one even take.
+
+    ``clips`` is a list of ``(mono float32 array, chunk text)``. Each chunk is
+    trimmed, its long inner silences shortened, its speaking pace pulled toward
+    the median pace of the job, and its loudness matched; then chunks are joined
+    with one pause per punctuation kind and a short fade at every seam.
+    """
+    import numpy as np
+    prepared = []
+    for x, t in clips:
+        x = compress_gaps(trim_np(x, sr, _EDGE_MS), sr)
+        if x.size:
+            prepared.append([x, t])
+    if not prepared:
+        return np.zeros(1, dtype=np.float32)
+
+    if tempo_fn is not None and len(prepared) >= 2:
+        rates = [((len(x) / sr) / _letters(t)) if _letters(t) >= 15 else None for x, t in prepared]
+        valid = sorted(r for r in rates if r)
+        if len(valid) >= 2:
+            target = valid[len(valid) // 2]
+            for k, r in enumerate(rates):
+                if not r:
+                    continue
+                f = r / target
+                if abs(f - 1.0) > 0.06:
+                    prepared[k][0] = np.asarray(tempo_fn(prepared[k][0], min(1.18, max(0.85, f))), dtype=np.float32)
+
+    levels = [_rms(x) for x, _ in prepared]
+    good = sorted(v for v in levels if v > 0)
+    if len(good) >= 2:
+        target = good[len(good) // 2]
+        for k, v in enumerate(levels):
+            if v > 0:
+                prepared[k][0] = prepared[k][0] * float(min(1.7, max(0.6, target / v)))
+
+    fade = int(sr * 0.006)
+    pieces = []
+    prev_text = ""
+    for x, t in prepared:
+        if pieces:
+            # The kept quiet edges already count toward the pause.
+            gap_ms = max(0, pause_ms_after(prev_text, pause_ms) - 2 * _EDGE_MS)
+            pieces.append(np.zeros(int(sr * gap_ms / 1000), dtype=np.float32))
+        pieces.append(_fade(x.astype(np.float32), fade))
+        prev_text = t
+    out = np.concatenate(pieces)
+    peak = float(np.max(np.abs(out))) if out.size else 0.0
+    if peak > 0.98:
+        out = out * (0.98 / peak)
+    return out
+
+
+def shorten_first(chunks: list[str], limit: int = 110) -> list[str]:
+    """Make the first chunk short: it becomes the voice reference for the rest."""
+    if len(chunks) < 2 or len(chunks[0]) <= limit:
+        return chunks
+    sentences = [x.strip() for x in SENTENCE_END.split(chunks[0]) if x.strip()]
+    head, used = "", 0
+    for sent in sentences:
+        if head and len(head) + 1 + len(sent) > limit:
+            break
+        head = f"{head} {sent}".strip()
+        used += 1
+    if used == 0 or len(head) > limit:
+        parts = _split_long(chunks[0], limit)
+        head, rest = parts[0], " ".join(parts[1:])
+    else:
+        rest = " ".join(sentences[used:])
+    return [head] + ([rest] if rest else []) + chunks[1:]
+
+
+def _to_np(audio):
+    import numpy as np
+    x = audio.detach().float().cpu().numpy()
+    if x.ndim > 1:
+        x = x.mean(axis=0)
+    return np.asarray(x, dtype=np.float32)
+
+
+def _write_wav(path: str, x, sr: int) -> None:
+    import wave
+    import numpy as np
+    pcm = (np.clip(x, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sr))
+        w.writeframes(pcm.tobytes())
+
+
+
 class _CancelledWhileWaiting(Exception):
     """Raised inside the runner when a cancel arrives during a blocking step."""
 
@@ -274,6 +452,11 @@ class NovaJob:
     _resume: asyncio.Event = field(default_factory=asyncio.Event)
     _cancel_evt: asyncio.Event = field(default_factory=asyncio.Event)
     _parts: list = field(default_factory=list)
+    _texts: list = field(default_factory=list)
+    _anchor: Optional[tuple] = None        # (wav path, its text): the voice every chunk follows
+    _anchor_off: bool = False
+    _seed: int = field(default_factory=lambda: __import__('random').randint(1, 2**31 - 1))
+    _anchor_dir: Optional[str] = None
     _task: Optional[asyncio.Task] = None
     _sr: int = 24000
     _cancellation: Any = None
@@ -430,10 +613,10 @@ class NovaJob:
                 self.chars_done += len(chunk)
                 self.done_chunks = i + 1
                 if audio is not None and audio.shape[-1] > 0:
-                    if self._parts:
-                        pause_ms = STYLES.get(s.style, STYLES["natural"])["pause_ms"]
-                        self._parts.append(_silence(sr, pause_ms, audio))
                     self._parts.append(audio)
+                    self._texts.append(chunk)
+                    if self._anchor is None and not self._anchor_off:
+                        self._make_anchor(audio, chunk, sr)
             cancelled = self._cancel_requested and (aborted or self.done_chunks < len(self.chunks))
             if not self._parts:
                 self.state = "cancelled" if cancelled else "error"
@@ -458,6 +641,9 @@ class NovaJob:
         finally:
             self.finished = time.monotonic()
             self.chunk_started = None
+            if self._anchor_dir:
+                import shutil
+                shutil.rmtree(self._anchor_dir, ignore_errors=True)
 
     def _render_chunk(self, backend, chunk: str, sr: int, semitones: float):
         s = self.settings
@@ -466,14 +652,36 @@ class NovaJob:
         kw: dict[str, Any] = {"language": s.language, "num_step": resolve_steps(s)}
         if eng["native_speed"]:
             kw["speed"] = speed
+        anchored = self._anchor is not None and s.engine in ("quality", "expressive")
         if s.engine == "fast":
             kw["voice"] = resolve_voice(s)
+        elif anchored:
+            # Same voice for every chunk: continue from the first chunk's audio.
+            kw["ref_audio"], kw["ref_text"] = self._anchor
         elif s.engine == "quality":
             kw["instruct"] = resolve_instruct(s)
         else:
             kw["description"] = resolve_description(s)
-        with self._cancellation.activate():
-            audio = backend.generate(chunk, **kw)
+        if s.engine == "quality":
+            kw["seed"] = self._seed
+        try:
+            with self._cancellation.activate():
+                audio = backend.generate(chunk, **kw)
+        except Exception:
+            if not anchored or self._cancel_requested:
+                raise
+            # The reference route failed on this engine: fall back to the plain
+            # voice description for the rest of the job rather than failing it.
+            logger.warning("nova job %s: voice anchoring failed, continuing without it", self.id, exc_info=True)
+            self._anchor, self._anchor_off = None, True
+            kw.pop("ref_audio", None)
+            kw.pop("ref_text", None)
+            if s.engine == "quality":
+                kw["instruct"] = resolve_instruct(s)
+            else:
+                kw["description"] = resolve_description(s)
+            with self._cancellation.activate():
+                audio = backend.generate(chunk, **kw)
         if audio is None:
             return None
         if audio.ndim == 1:
@@ -482,9 +690,38 @@ class NovaJob:
             audio = change_tempo(audio, sr, speed)
         return shift_pitch(audio, sr, semitones)
 
+    def _make_anchor(self, audio, text: str, sr: int) -> None:
+        """Keep the first chunk as the voice reference for the engines that can follow one."""
+        s = self.settings
+        if s.engine not in ("quality", "expressive") or len(self.chunks) < 2:
+            self._anchor_off = True
+            return
+        try:
+            import tempfile
+            x = trim_np(_to_np(audio), sr)
+            if x.size < sr or x.size > 15 * sr:      # too short to carry a voice, or too long to be cheap
+                self._anchor_off = True
+                return
+            self._anchor_dir = tempfile.mkdtemp(prefix="nova_anchor_")
+            path = f"{self._anchor_dir}/voice.wav"
+            _write_wav(path, x, sr)
+            self._anchor = (path, text)
+        except Exception:  # noqa: BLE001
+            logger.warning("nova job %s: could not keep a voice reference", self.id, exc_info=True)
+            self._anchor_off = True
+
     def _join(self, sr: int):
+        import numpy as np
         import torch
-        return torch.cat([p.to(self._parts[0].dtype) for p in self._parts], dim=-1), sr
+        pause_ms = STYLES.get(self.settings.style, STYLES["natural"])["pause_ms"]
+        clips = [(_to_np(a), t) for a, t in zip(self._parts, self._texts)]
+
+        def tempo(x, factor):
+            y = change_tempo(torch.from_numpy(np.ascontiguousarray(x)).unsqueeze(0), sr, factor)
+            return y.detach().cpu().numpy().reshape(-1)
+
+        out = polish_clips(clips, sr, pause_ms, tempo)
+        return torch.from_numpy(out).unsqueeze(0), sr
 
 
 class NovaJobManager:

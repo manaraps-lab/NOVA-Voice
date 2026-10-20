@@ -255,3 +255,126 @@ def test_cancel_wakes_a_paused_job():
 
     asyncio.run(scenario())
     assert job.progress()["state"] == "cancelled"
+
+
+def _sine(sr, sec, amp=0.3, f=220.0):
+    import numpy as np
+    t = np.arange(int(sr * sec)) / sr
+    return (amp * np.sin(2 * np.pi * f * t)).astype("float32")
+
+
+def test_pause_depends_on_how_the_chunk_ended():
+    assert nj.pause_ms_after("انتهت الجملة.", 300) == 300
+    assert nj.pause_ms_after("هل انتهت؟»", 300) == 300
+    assert nj.pause_ms_after("أولا، ", 300) == 135
+    assert nj.pause_ms_after("بلا علامة", 300) == 60
+
+
+def test_first_chunk_is_shortened_so_it_can_serve_as_the_voice_reference():
+    first = "جملة أولى قصيرة. " + "جملة ثانية طويلة نسبيا جدا. " * 6
+    out = nj.shorten_first([first.strip(), "الثالثة."])
+    assert len(out[0]) <= 110 and len(out) == 3
+    assert "".join(out).replace(" ", "") == (first.strip() + "الثالثة.").replace(" ", "")
+    assert nj.shorten_first(["قصيرة."]) == ["قصيرة."]
+
+
+def test_polish_evens_out_pace_loudness_and_pauses():
+    import numpy as np
+    sr = 16000
+    text = "هذه جملة مناسبة لقياس السرعة. "
+    # same text rendered at three different paces and levels, with ragged silence around it
+    pad = np.zeros(int(sr * 0.9), dtype="float32")
+    clips = [
+        (np.concatenate([pad, _sine(sr, 2.0, 0.5), pad]), text),
+        (np.concatenate([pad[:1000], _sine(sr, 3.0, 0.1), pad]), text),
+        (np.concatenate([pad, _sine(sr, 2.0, 0.3), pad[:500]]), text),
+    ]
+    calls = []
+
+    def tempo(x, f):
+        calls.append(round(f, 2))
+        return x[:: 1] if abs(f - 1) < 1e-6 else x[: int(len(x) / f)]
+
+    out = nj.polish_clips(clips, sr, 250, tempo)
+    assert out.dtype == np.float32 and float(np.max(np.abs(out))) <= 0.98 + 1e-6
+    assert calls and all(0.85 <= c <= 1.18 for c in calls)        # the slow clip was sped up, within bounds
+    # leading/trailing silence trimmed and exactly two sentence-length pauses were inserted
+    silent = np.abs(out) < 1e-4
+    runs, n = [], 0
+    for v in silent:
+        if v:
+            n += 1
+        elif n:
+            runs.append(n)
+            n = 0
+    big = [r for r in runs if r > sr * 0.2]
+    assert len(big) == 2 and all(abs(r - sr * 0.25) < sr * 0.05 for r in big)
+
+
+def test_long_inner_silence_is_compressed():
+    import numpy as np
+    sr = 16000
+    x = np.concatenate([_sine(sr, 1.0), np.zeros(int(sr * 2.0), dtype="float32"), _sine(sr, 1.0)])
+    y = nj.compress_gaps(x, sr)
+    assert len(y) < len(x) - int(sr * 1.4)
+    assert len(y) > 2 * sr
+
+
+def _patch_audio_io():
+    import numpy as np
+    saved = (nj._to_np, nj._write_wav, nj.trim_np)
+    nj._to_np = lambda a: np.zeros(a.n, dtype="float32") + 0.1
+    nj._write_wav = lambda path, x, sr: open(path, "wb").write(b"RIFF")
+    nj.trim_np = lambda x, sr, keep_ms=60: x
+    return saved
+
+
+def _restore_audio_io(saved):
+    nj._to_np, nj._write_wav, nj.trim_np = saved
+
+
+def test_later_chunks_follow_the_first_chunks_voice():
+    _patch()
+    saved = _patch_audio_io()
+    job = _job("جملة أولى للاختبار. " * 3 + "جملة أخرى مختلفة تماما عن الأولى. " * 12, engine="quality")
+    job.chunks = nj.shorten_first(job.chunks)
+    backend = FakeBackend(delay=0.0)
+    backend.sample_rate = 100
+
+    class Long(FakeBackend):
+        sample_rate = 100
+
+        def generate(self, text, **kw):
+            self.calls.append((text, kw))
+            return Fake(300)                      # 3 s at 100 Hz: long enough to serve as a reference
+
+    backend = Long(delay=0.0)
+    asyncio.run(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+    assert len(backend.calls) >= 2
+    first, later = backend.calls[0][1], backend.calls[1][1]
+    assert "instruct" in first and "ref_audio" not in first
+    assert later.get("ref_audio") and later.get("ref_text") == job.chunks[0] and "instruct" not in later
+    assert first["seed"] == later["seed"]
+    _restore_audio_io(saved)
+
+
+def test_anchor_failure_falls_back_to_plain_voice():
+    _patch()
+    saved = _patch_audio_io()
+    job = _job("جملة أولى للاختبار. " * 3 + "جملة أخرى مختلفة تماما عن الأولى. " * 12, engine="quality")
+    job.chunks = nj.shorten_first(job.chunks)
+
+    class Picky(FakeBackend):
+        sample_rate = 100
+
+        def generate(self, text, **kw):
+            self.calls.append((text, kw))
+            if "ref_audio" in kw:
+                raise RuntimeError("reference not supported")
+            return Fake(300)
+
+    backend = Picky(delay=0.0)
+    asyncio.run(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+    assert job.progress()["state"] == "done"
+    _restore_audio_io(saved)
+    assert any("instruct" in kw for _t, kw in backend.calls[2:])      # later chunks use the plain voice again

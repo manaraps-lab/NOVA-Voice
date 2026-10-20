@@ -83,6 +83,8 @@ async def nova_create(req: JobRequest):
         raise HTTPException(400, "أسلوب إلقاء غير معروف")
     text = prepare_text(req.text, req.language)
     chunks = nj.split_for_job(text, nj.ENGINES[req.engine]["chunk_chars"])
+    if req.engine in ("quality", "expressive"):
+        chunks = nj.shorten_first(chunks)
     if not chunks:
         raise HTTPException(400, "النص فارغ")
     settings = nj.JobSettings(**{**req.model_dump(), "text": text})
