@@ -34,7 +34,8 @@ def _ids(payload: dict) -> set[str]:
 
 def test_required_models_is_tts_only():
     from api.routers.setup.models import REQUIRED_MODELS
-    assert [rid for rid, _ in REQUIRED_MODELS] == ["k2-fsa/OmniVoice"]
+    # NOVA Voice: nothing is downloaded up front; engines fetch their model on first use.
+    assert REQUIRED_MODELS == []
 
 
 def test_mac_arm_curates_mlx_whisper_not_ct2(client):

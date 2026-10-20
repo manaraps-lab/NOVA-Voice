@@ -3,12 +3,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { Link } from '@tanstack/react-router';
 import {
   AudioLines,
+  Bell,
+  BellOff,
   Check,
+  Cpu,
   Download,
+  Moon,
   Pause,
   Play,
   Settings as SettingsIcon,
   Square,
+  Sun,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -19,6 +24,8 @@ import { countWords, formatClock } from './format';
 import {
   AGE_LABELS,
   AGE_ORDER,
+  QUALITY_LABELS,
+  QUALITY_ORDER,
   S,
   STYLE_LABELS,
   STYLE_ORDER,
@@ -26,10 +33,13 @@ import {
 } from './strings';
 import {
   type DeviceStats,
+  type EngineRow,
   type JobRequest,
   type JobProgress,
+  installEngine,
   isActive,
   useDeviceStats,
+  useEngines,
   useNovaJob,
   useNow,
 } from './use-nova-job';
@@ -38,7 +48,10 @@ const STORAGE_KEY = 'nova.settings.v1';
 
 interface Prefs {
   text: string;
-  engine: 'fast' | 'quality';
+  engine: 'fast' | 'quality' | 'expressive';
+  quality: string;
+  wavBits: 16 | 24 | 32;
+  theme: 'aurora' | 'night';
   style: string;
   gender: 'male' | 'female';
   age: string;
@@ -51,6 +64,9 @@ interface Prefs {
 const DEFAULTS: Prefs = {
   text: '',
   engine: 'fast',
+  quality: 'balanced',
+  wavBits: 16,
+  theme: 'aurora',
   style: 'natural',
   gender: 'female',
   age: 'young adult',
@@ -270,17 +286,18 @@ function ProgressCard(props: {
             </div>
             <div>
               <span>{S.total}</span>
-              <bdi className="nova-num">{live ? formatClock(elapsed + (eta ?? 0)) : formatClock(elapsed)}</bdi>
+              <bdi className="nova-num">{live ? (eta == null ? '--:--' : formatClock(elapsed + eta)) : formatClock(elapsed)}</bdi>
             </div>
           </div>
           <p className="nova-muted">
             {S.part} <bdi className="nova-num">{p.chunk}</bdi> {S.of} <bdi className="nova-num">{p.chunks}</bdi>
-            {p.calibrating && live ? ` · ${S.calibrating}` : ''}
+            {p.calibrating && live && !p.warming ? ` · ${S.calibrating}` : ''}
           </p>
+          {p.warming && live && <p className="nova-note">{S.warming}</p>}
         </div>
       </div>
       <div className="nova-bar" role="progressbar" aria-valuenow={Math.floor(p.percent)} aria-valuemin={0} aria-valuemax={100}>
-        <div className="nova-bar-fill" style={{ width: `${p.percent}%` }} />
+        <div className={`nova-bar-fill${p.warming ? ' is-indeterminate' : ''}`} style={{ width: p.warming ? '35%' : `${p.percent}%` }} />
       </div>
       {live && (
         <>
@@ -355,13 +372,109 @@ function notify(body: string) {
   }
 }
 
+function Dot({ on }: { on: boolean | null }) {
+  return <span className={`nova-dot ${on === null ? 'is-unknown' : on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
+}
+
+const BADGES: Record<string, string> = { fastest: S.badgeFastest, best_arabic: S.badgeBestArabic, studio: S.badgeStudio };
+
+function EnginePanel(props: {
+  rows: EngineRow[] | null;
+  selected: string;
+  locked: boolean;
+  onSelect: (key: Prefs['engine']) => void;
+  onRefresh: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const install = async (id: string) => {
+    setBusy(id);
+    setErr(null);
+    const failure = await installEngine(id);
+    if (failure) setErr(failure);
+    props.onRefresh();
+    setBusy(null);
+  };
+  const order = ['fast', 'quality', 'expressive'];
+  const rows = props.rows ? [...props.rows].sort((x, y) => order.indexOf(x.key) - order.indexOf(y.key)) : null;
+  return (
+    <section className="nova-card nova-enginepanel" id="nova-engine-panel" aria-label={S.modelsTitle}>
+      <div className="nova-panel-head">
+        <h2>{S.modelsTitle}</h2>
+        <button type="button" className="nova-link" onClick={props.onRefresh}>{S.refresh}</button>
+      </div>
+      <p className="nova-hint">{S.modelsHint}</p>
+      <ul className="nova-model-list" role="radiogroup" aria-label={S.chooseEngine}>
+        {(rows ?? []).map((r) => {
+          const installing = r.install?.state === 'running' || busy === r.engine_id;
+          const on = props.selected === r.key;
+          return (
+            <li
+              key={r.key}
+              role="radio"
+              aria-checked={on}
+              tabIndex={props.locked ? -1 : 0}
+              className={`nova-model${on ? ' is-on' : ''}${props.locked ? ' is-locked' : ''}`}
+              onClick={() => { if (!props.locked) props.onSelect(r.key); }}
+              onKeyDown={(e) => { if (!props.locked && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); props.onSelect(r.key); } }}
+            >
+              <Dot on={r.available} />
+              <div className="nova-model-info">
+                <strong>
+                  {r.label}
+                  {r.badge && BADGES[r.badge] && <span className="nova-badge">{BADGES[r.badge]}</span>}
+                </strong>
+                <span className="nova-muted" dir="auto">{r.model}</span>
+                <span className="nova-muted">
+                  {r.available ? `${S.connected}${r.loaded ? ` · ${S.loadedInMemory}` : ''}` : S.notConnected}
+                  {r.available && r.weights_cached === false ? ` · ${S.weightsMissing}` : ''}
+                </span>
+                {r.arabic_note && <span className="nova-note-ar" dir="auto">{r.arabic_note}</span>}
+                {r.fit && r.min_ram_gb && (
+                  <span className={`nova-fit is-${r.fit}`}>
+                    {r.fit === 'ok' ? S.fitOk : r.fit === 'tight' ? S.fitTight : S.fitHeavy}
+                    {' · '}
+                    {S.needsRam} <bdi className="nova-num">{r.min_ram_gb}</bdi> {S.gb}
+                    {r.system_ram_gb ? <> · {S.yourRam} <bdi className="nova-num">{r.system_ram_gb}</bdi> {S.gb}</> : null}
+                  </span>
+                )}
+                {!r.available && r.reason && <span className="nova-reason" dir="auto">{r.reason}</span>}
+                {installing && <span className="nova-note">{S.installing}</span>}
+                {r.install?.state === 'failed' && r.install.error && (
+                  <span className="nova-reason" dir="auto">{S.installFailed}: {r.install.error}</span>
+                )}
+              </div>
+              {!r.available && r.installable && !installing && (
+                <button
+                  type="button"
+                  className="nova-btn nova-btn-soft"
+                  onClick={(e) => { e.stopPropagation(); void install(r.engine_id); }}
+                >
+                  {S.install}
+                </button>
+              )}
+            </li>
+          );
+        })}
+        {!rows && <li className="nova-muted">…</li>}
+      </ul>
+      {err && <p className="nova-warn" dir="auto">{err}</p>}
+    </section>
+  );
+}
+
 export function NovaPage() {
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [muted, setMuted] = useState(sfx.isMuted());
+  const [chimeMuted, setChimeMuted] = useState(sfx.isChimeMuted());
   const job = useNovaJob();
   const { progress } = job;
   const live = isActive(progress?.state);
   const stats = useDeviceStats(live);
+  const engines = useEngines(true, 5000);
+  const currentEngine = engines.rows?.find((r) => r.key === prefs.engine) ?? null;
+  const engineReady = currentEngine ? currentEngine.available : true;
+  const anyOnline = engines.rows ? engines.rows.some((r) => r.available) : null;
   const set = useCallback(<K extends keyof Prefs>(key: K, value: Prefs[K]) => setPrefs((p) => ({ ...p, [key]: value })), []);
 
   useEffect(() => {
@@ -381,13 +494,13 @@ export function NovaPage() {
     lastState.current = s;
     if (!was || !isActive(was as JobProgress['state'])) return;
     if (s === 'done') {
-      sfx.success();
+      sfx.done();
       notify(S.notifyDone);
     } else if (s === 'cancelled') {
-      sfx.cancel();
+      sfx.stopped();
       notify(S.notifyCancelled);
     } else if (s === 'error') {
-      sfx.error();
+      sfx.failed();
       notify(S.notifyError);
     }
   }, [progress?.state]);
@@ -396,12 +509,14 @@ export function NovaPage() {
   const voice = prefs.voice && voices.includes(prefs.voice) ? prefs.voice : voices[0];
   const fast = prefs.engine === 'fast';
   const words = useMemo(() => countWords(prefs.text), [prefs.text]);
-  const canGenerate = prefs.text.trim().length > 0 && !live && !job.starting;
+  const canGenerate = prefs.text.trim().length > 0 && !live && !job.starting && engineReady;
 
   const generate = () => {
     if (!canGenerate) return;
     sfx.start();
-    const req: JobRequest = { ...prefs, voice, language: 'ar' };
+    const { wavBits, theme: _theme, ...rest } = prefs;
+    void _theme;
+    const req: JobRequest = { ...rest, wav_bits: wavBits, voice, language: 'ar' };
     void job.start(req);
   };
 
@@ -415,7 +530,7 @@ export function NovaPage() {
   const showResult = progress && progress.result && !live;
 
   return (
-    <div className="nova-root" dir="rtl" lang="ar" onClickCapture={onClickCapture}>
+    <div className="nova-root" data-theme={prefs.theme} dir="rtl" lang="ar" onClickCapture={onClickCapture}>
       <header className="nova-header">
         <div className="nova-brand">
           <Logo />
@@ -425,6 +540,41 @@ export function NovaPage() {
           </div>
         </div>
         <div className="nova-header-actions" data-nodrag>
+          <button
+            type="button"
+            className="nova-pill-btn"
+            data-nosound
+            onClick={() => { sfx.click(); document.getElementById('nova-engine-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+            title={S.modelsTitle}
+            aria-label={S.modelsTitle}
+          >
+            <Dot on={anyOnline} /> <Cpu size={17} /> <span>{S.models}</span>
+          </button>
+          <button
+            type="button"
+            className="nova-icon-btn"
+            data-nosound
+            title={S.theme}
+            aria-label={S.theme}
+            onClick={() => { sfx.click(); set('theme', prefs.theme === 'aurora' ? 'night' : 'aurora'); }}
+          >
+            {prefs.theme === 'aurora' ? <Moon size={20} /> : <Sun size={20} />}
+          </button>
+          <button
+            type="button"
+            className="nova-icon-btn"
+            data-nosound
+            title={chimeMuted ? S.chimeOff : S.chimeOn}
+            aria-label={chimeMuted ? S.chimeOff : S.chimeOn}
+            onClick={() => {
+              const next = !chimeMuted;
+              sfx.setChimeMuted(next);
+              setChimeMuted(next);
+              if (!next) sfx.done();
+            }}
+          >
+            {chimeMuted ? <BellOff size={20} /> : <Bell size={20} />}
+          </button>
           <button
             type="button"
             className="nova-icon-btn"
@@ -448,6 +598,8 @@ export function NovaPage() {
 
       <main className="nova-main">
         <div className="nova-col-main">
+          <EnginePanel rows={engines.rows} selected={prefs.engine} locked={live} onSelect={(k) => set('engine', k)} onRefresh={engines.refresh} />
+
           <section className="nova-card nova-text-card">
             <div className="nova-text-head">
               <label htmlFor="nova-text">{S.textLabel}</label>
@@ -481,6 +633,15 @@ export function NovaPage() {
                 <AudioLines size={20} /> {S.generate}
               </button>
             </div>
+            {!engineReady && currentEngine && (
+              <p className="nova-warn" dir="auto">
+                {S.engineNotReady} {currentEngine.reason || S.notConnected}{' '}
+                <button type="button" className="nova-link" onClick={() => document.getElementById('nova-engine-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>{S.models}</button>
+              </p>
+            )}
+            {currentEngine?.fit === 'heavy' && engineReady && (
+              <p className="nova-warn" dir="auto">{S.heavyWarn}</p>
+            )}
             {job.error && <p className="nova-warn" dir="auto">{job.error}</p>}
           </section>
 
@@ -490,21 +651,6 @@ export function NovaPage() {
 
         <aside className="nova-col-side">
           <section className="nova-card nova-controls">
-            <div className="nova-field">
-              <span className="nova-label">{S.engine}</span>
-              <Segmented
-                label={S.engine}
-                value={prefs.engine}
-                onChange={(v) => set('engine', v)}
-                disabled={live}
-                options={[
-                  { value: 'fast', label: S.engineFast },
-                  { value: 'quality', label: S.engineQuality },
-                ]}
-              />
-              <p className="nova-hint">{fast ? S.engineFastHint : S.engineQualityHint}</p>
-            </div>
-
             <div className="nova-field">
               <span className="nova-label">{S.style}</span>
               <div className="nova-chips">
@@ -566,6 +712,24 @@ export function NovaPage() {
                 </select>
               </div>
             )}
+
+            <div className="nova-field">
+              <span className="nova-label">{S.audioQuality}</span>
+              <Segmented
+                label={S.audioQuality}
+                value={prefs.quality as (typeof QUALITY_ORDER)[number]}
+                onChange={(v) => set('quality', v)}
+                disabled={live}
+                options={QUALITY_ORDER.map((q) => ({ value: q, label: QUALITY_LABELS[q] }))}
+              />
+              <p className="nova-hint">{S.qualityHint}</p>
+              <label className="nova-label" htmlFor="nova-bits">{S.fileFormat}</label>
+              <select id="nova-bits" className="nova-select" value={prefs.wavBits} disabled={live} onChange={(e) => set('wavBits', Number(e.target.value) as 16 | 24 | 32)}>
+                <option value={16}>{S.bits16}</option>
+                <option value={24}>{S.bits24}</option>
+                <option value={32}>{S.bits32}</option>
+              </select>
+            </div>
 
             <Slider label={S.speed} value={prefs.speed} min={0.6} max={1.6} step={0.05} low={S.slower} high={S.faster} format={(v) => `×${v.toFixed(2)}`} onChange={(v) => set('speed', v)} disabled={live} />
             <Slider label={S.pitch} value={prefs.pitch} min={-6} max={6} step={0.5} low={S.deeper} high={S.higher} format={(v) => (v > 0 ? `+${v}` : `${v}`)} onChange={(v) => set('pitch', v)} disabled={live} />

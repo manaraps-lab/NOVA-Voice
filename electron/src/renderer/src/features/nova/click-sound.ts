@@ -6,11 +6,15 @@
 const KEY = 'nova.sound.v1';
 let ctx: AudioContext | null = null;
 let muted = false;
+const CHIME_KEY = 'nova.chime.v1';
+let chimeMuted = false;
 
 try {
   muted = localStorage.getItem(KEY) === 'off';
+  chimeMuted = localStorage.getItem(CHIME_KEY) === 'off';
 } catch {
   muted = false;
+  chimeMuted = false;
 }
 
 function context(): AudioContext | null {
@@ -29,8 +33,8 @@ function context(): AudioContext | null {
   }
 }
 
-function tone(freq: number, duration: number, opts: { type?: OscillatorType; gain?: number; at?: number; to?: number } = {}) {
-  if (muted) return;
+function tone(freq: number, duration: number, opts: { type?: OscillatorType; gain?: number; at?: number; to?: number; force?: boolean } = {}) {
+  if (muted && !opts.force) return;
   const c = context();
   if (!c) return;
   try {
@@ -70,6 +74,31 @@ export const sfx = {
   error: () => {
     tone(220, 0.18, { type: 'sawtooth', gain: 0.04 });
     tone(165, 0.24, { type: 'sawtooth', gain: 0.04, at: 0.16 });
+  },
+  /** Completion notice. Independent of the click sounds so it can stay on alone. */
+  done: () => {
+    if (chimeMuted) return;
+    [659, 784, 988, 1319].forEach((f, i) => tone(f, 0.28, { gain: 0.11, at: i * 0.14, force: true }));
+    tone(1319, 0.7, { gain: 0.07, at: 0.6, force: true });
+  },
+  stopped: () => {
+    if (chimeMuted) return;
+    tone(523, 0.18, { gain: 0.1, force: true });
+    tone(392, 0.3, { gain: 0.1, at: 0.16, force: true });
+  },
+  failed: () => {
+    if (chimeMuted) return;
+    tone(220, 0.22, { type: 'sawtooth', gain: 0.07, force: true });
+    tone(165, 0.32, { type: 'sawtooth', gain: 0.07, at: 0.2, force: true });
+  },
+  isChimeMuted: () => chimeMuted,
+  setChimeMuted(value: boolean) {
+    chimeMuted = value;
+    try {
+      localStorage.setItem(CHIME_KEY, value ? 'off' : 'on');
+    } catch {
+      // Keeps the choice for this session only.
+    }
   },
   isMuted: () => muted,
   setMuted(value: boolean) {

@@ -18,8 +18,10 @@ export interface JobProgress {
   percent: number;
   elapsed_s: number;
   eta_s: number | null;
-  total_estimate_s: number;
+  total_estimate_s: number | null;
   calibrating: boolean;
+  warming: boolean;
+  chunk_elapsed_s: number;
   chunk: number;
   chunks: number;
   chars_done: number;
@@ -32,7 +34,9 @@ export interface JobProgress {
 
 export interface JobRequest {
   text: string;
-  engine: 'fast' | 'quality';
+  engine: 'fast' | 'quality' | 'expressive';
+  quality: string;
+  wav_bits: 16 | 24 | 32;
   style: string;
   gender: 'male' | 'female';
   age: string;
@@ -119,6 +123,18 @@ export function useNovaJob() {
       try {
         accept(await apiJson<JobProgress>('/nova/jobs', { method: 'POST', body: JSON.stringify(req), headers: { 'Content-Type': 'application/json' } }));
       } catch (err) {
+        // 409: a job is already running in the backend; show its progress.
+        if (err instanceof ApiError && err.status === 409) {
+          try {
+            const p = await apiJson<JobProgress | { state: 'idle' }>('/nova/jobs/active');
+            if (p.state !== 'idle') {
+              accept(p as JobProgress);
+              return;
+            }
+          } catch {
+            /* fall through to the message */
+          }
+        }
         setError(message(err));
       } finally {
         setStarting(false);
@@ -155,6 +171,67 @@ export function useNovaJob() {
     cancel: () => control('cancel'),
     reset,
   };
+}
+
+export interface EngineRow {
+  key: 'fast' | 'quality' | 'expressive';
+  engine_id: string;
+  label: string;
+  model: string;
+  note: string;
+  available: boolean;
+  reason: string;
+  loaded: boolean;
+  installable: boolean;
+  installed: boolean | null;
+  install: {
+    state: string | null;
+    error: string | null;
+    weights_progress: unknown;
+    steps: { id: string; state: string }[];
+  } | null;
+  weights_cached: boolean | null;
+  badge: 'fastest' | 'best_arabic' | 'studio' | null;
+  arabic_note: string;
+  min_ram_gb: number | null;
+  system_ram_gb: number | null;
+  fit: 'ok' | 'tight' | 'heavy' | null;
+}
+
+/** Which engines can render now. Polls while `enabled`. */
+export function useEngines(enabled: boolean, intervalMs = 5000) {
+  const [rows, setRows] = useState<EngineRow[] | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const run = async () => {
+      try {
+        const r = await apiJson<{ engines: EngineRow[] }>('/nova/engines');
+        if (!stop) setRows(r.engines);
+      } catch {
+        // Keep the last reading; the dots only change on a real answer.
+      }
+      if (!stop) timer = setTimeout(run, intervalMs);
+    };
+    void run();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [enabled, intervalMs, tick]);
+  const refresh = useCallback(() => setTick((n) => n + 1), []);
+  return { rows, refresh };
+}
+
+export async function installEngine(engineId: string): Promise<string | null> {
+  try {
+    await apiJson(`/engines/sidecar/${engineId}/install`, { method: 'POST' });
+    return null;
+  } catch (err) {
+    return message(err);
+  }
 }
 
 export function useDeviceStats(enabled: boolean, intervalMs = 1000) {

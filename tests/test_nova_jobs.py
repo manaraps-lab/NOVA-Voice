@@ -148,7 +148,8 @@ def test_cancel_while_paused_still_saves_what_was_rendered():
 
 def test_eta_is_marked_calibrating_until_first_chunk_then_measured():
     job = _job("جملة. " * 100)
-    assert job.progress()["calibrating"] is True
+    first = job.progress()
+    assert first["calibrating"] is True and first["eta_s"] is None   # nothing honest to extrapolate yet
     job.chars_done, job.gen_seconds_done, job.done_chunks = 100, 5.0, 1
     p = job.progress()
     assert p["calibrating"] is False
@@ -165,3 +166,92 @@ def test_only_one_active_job():
         assert False, "second job must be refused"
     except RuntimeError:
         pass
+
+
+def test_quality_levels_map_to_each_engines_own_steps():
+    for key, meta in nj.ENGINES.items():
+        assert set(meta["steps"]) == set(nj.QUALITY_LEVELS)
+        s = nj.JobSettings(text="x", engine=key, quality="max")
+        assert nj.resolve_steps(s) == meta["steps"]["max"]
+    assert nj.resolve_steps(nj.JobSettings(text="x", engine="fast", quality="max")) <= 12   # Supertonic's ceiling
+
+
+def test_expressive_description_carries_style_gender_age_and_depth():
+    s = nj.JobSettings(text="x", engine="expressive", style="enthusiastic", gender="male", age="elderly", depth=-1)
+    d = nj.resolve_description(s)
+    assert d.startswith("an elderly male voice") and "enthusiastic" in d and "deep" in d
+    assert nj.effective_semitones(s) == 0.0   # style lives in the description, not in DSP
+
+
+def test_cancel_interrupts_a_long_running_chunk_immediately():
+    """A sidecar engine is killed on cancel, so a slow chunk must not delay the stop."""
+    from services.inference_cancellation import current_cancellation
+    _patch()
+    job = _job("جملة طويلة نسبيا للاختبار. " * 40)
+
+    class SlowBackend(FakeBackend):
+        def generate(self, text, **kw):
+            self.calls.append((text, kw))
+            if len(self.calls) == 1:
+                return Fake(len(text))            # first chunk finishes normally
+            scope = current_cancellation()
+            for _ in range(600):                  # up to 30 s unless cancelled
+                if scope and scope.cancelled.is_set():
+                    raise RuntimeError("sidecar killed")
+                time.sleep(0.05)
+            return Fake(len(text))
+
+    backend = SlowBackend(delay=0.0)
+
+    async def scenario():
+        task = asyncio.create_task(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+        await asyncio.sleep(0.4)                  # first chunk done, second one stuck
+        t0 = time.monotonic()
+        job.cancel()
+        await task
+        return time.monotonic() - t0
+
+    waited = asyncio.run(scenario())
+    assert waited < 2.0
+    p = job.progress()
+    assert p["state"] == "cancelled" and p["partial"] is True and p["result"]
+    assert job.done_chunks == 1                   # the interrupted chunk is not counted
+
+
+def test_cancel_during_model_loading_returns_at_once():
+    """First use downloads/loads a multi-GB model; cancel must not wait for it."""
+    _patch()
+    job = _job("جملة للاختبار. " * 20)
+
+    def slow_load(_id):
+        time.sleep(5)                             # a thread cannot be interrupted
+        return FakeBackend()
+
+    async def scenario():
+        task = asyncio.create_task(job.run(get_backend=slow_load, finalize=_finalize))
+        await asyncio.sleep(0.3)
+        t0 = time.monotonic()
+        job.cancel()
+        await task
+        return time.monotonic() - t0
+
+    waited = asyncio.run(scenario())
+    assert waited < 1.0
+    assert job.progress()["state"] == "cancelled"
+
+
+def test_cancel_wakes_a_paused_job():
+    _patch()
+    job = _job("جملة للاختبار. " * 40)
+    backend = FakeBackend(delay=0.4)
+
+    async def scenario():
+        task = asyncio.create_task(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+        await asyncio.sleep(0.2)
+        job.pause()
+        await asyncio.sleep(0.5)
+        job.cancel()
+        await asyncio.wait_for(task, 3)
+
+    asyncio.run(scenario())
+    assert job.progress()["state"] == "cancelled"

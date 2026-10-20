@@ -37,8 +37,8 @@ const PRELOAD_PATH = join(here, '../preload/index.mjs');
 const RENDERER_DIR = join(here, '../renderer');
 
 // Neutral startup surface; transparent caption controls follow the CSS title bar.
-const BACKGROUND = '#0a0a0a';
-const OVERLAY = { color: '#00000000', symbolColor: '#737373', height: 52 };
+const BACKGROUND = '#08201d';
+const OVERLAY = { color: '#00000000', symbolColor: '#d8e6df', height: 52 };
 
 // NOVA Voice has no update feed of its own yet; never follow the upstream one.
 process.env.VOICESTUDIO_DISABLE_UPDATER ??= '1';

@@ -1041,13 +1041,20 @@ async def _phase_b(app: FastAPI) -> None:
     # Warm the TTS model in the background so first /generate is instant.
     async def _preload_after_reconcile():
         await _await_profile_reconcile(app)
+        # NOVA Voice loads an engine only when it is used: preloading the 2.4 GB
+        # native model at every launch starves an 8 GB machine of RAM.
+        from core.feature_profile import active_profile as _nova_profile
+        if _nova_profile() == "tts":
+            logger.info("TTS profile: startup model preload skipped; engines load on first use.")
+            return
         await preload_model()
 
     app.state.preload_task = asyncio.create_task(_preload_after_reconcile())
     # Dictation v2: capture ASR warms in the background BY DEFAULT (~30s
     # post-boot, skipped under 4 GB free RAM at warm time).
     app.state.capture_preload_task = None  # only assigned when it runs (#1000 class)
-    if _env_flag("OMNIVOICE_PRELOAD_CAPTURE_ASR", default=True):
+    from core.feature_profile import active_profile as _nova_profile_asr
+    if _env_flag("OMNIVOICE_PRELOAD_CAPTURE_ASR", default=_nova_profile_asr() != "tts"):
         async def _preload_capture_asr():
             await asyncio.sleep(_capture_preload_delay_s())
             await _await_profile_reconcile(app)
