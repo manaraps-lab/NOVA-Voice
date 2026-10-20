@@ -387,6 +387,7 @@ function EnginePanel(props: {
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const install = async (id: string) => {
     setBusy(id);
     setErr(null);
@@ -429,7 +430,16 @@ function EnginePanel(props: {
                   {r.available ? `${S.connected}${r.loaded ? ` · ${S.loadedInMemory}` : ''}` : S.notConnected}
                   {r.available && r.weights_cached === false ? ` · ${S.weightsMissing}` : ''}
                 </span>
-                {r.arabic_note && <span className="nova-note-ar" dir="auto">{r.arabic_note}</span>}
+                {r.arabic_note && (
+                  <button
+                    type="button"
+                    className="nova-link nova-details-btn"
+                    onClick={(e) => { e.stopPropagation(); setOpen(open === r.key ? null : r.key); }}
+                  >
+                    {open === r.key ? S.lessDetails : S.moreDetails}
+                  </button>
+                )}
+                {open === r.key && r.arabic_note && <span className="nova-note-ar" dir="auto">{r.arabic_note}</span>}
                 {r.fit && r.min_ram_gb && (
                   <span className={`nova-fit is-${r.fit}`}>
                     {r.fit === 'ok' ? S.fitOk : r.fit === 'tight' ? S.fitTight : S.fitHeavy}
@@ -475,6 +485,16 @@ export function NovaPage() {
   const currentEngine = engines.rows?.find((r) => r.key === prefs.engine) ?? null;
   const engineReady = currentEngine ? currentEngine.available : true;
   const anyOnline = engines.rows ? engines.rows.some((r) => r.available) : null;
+  const autoPicked = useRef(false);
+  useEffect(() => {
+    if (autoPicked.current || !engines.rows) return;
+    autoPicked.current = true;
+    const cur = engines.rows.find((r) => r.key === prefs.engine);
+    if (cur && !cur.available) {
+      const pick = ['quality', 'fast', 'expressive'].map((k) => engines.rows!.find((r) => r.key === k)).find((r) => r && r.available);
+      if (pick) setPrefs((p) => ({ ...p, engine: pick.key }));
+    }
+  }, [engines.rows, prefs.engine]);
   const set = useCallback(<K extends keyof Prefs>(key: K, value: Prefs[K]) => setPrefs((p) => ({ ...p, [key]: value })), []);
 
   useEffect(() => {

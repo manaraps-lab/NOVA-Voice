@@ -246,9 +246,11 @@ _ENGINE_INFO = {
 
 
 def _fit(total_gb: float, need_gb: float) -> str:
-    if total_gb >= need_gb + 2:
+    # Judge by the nominal size: a "8 GB" laptop reports ~7.7 GB usable.
+    nominal = round(total_gb)
+    if nominal >= need_gb + 2:
         return "ok"
-    if total_gb >= need_gb:
+    if nominal >= need_gb:
         return "tight"
     return "heavy"
 
