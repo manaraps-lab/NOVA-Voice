@@ -170,6 +170,9 @@ def test_only_one_active_job():
 
 def test_quality_levels_map_to_each_engines_own_steps():
     for key, meta in nj.ENGINES.items():
+        if not meta["steps"]:
+            assert nj.resolve_steps(nj.JobSettings(text="x", engine=key)) is None   # no step control (compact engine)
+            continue
         assert set(meta["steps"]) == set(nj.QUALITY_LEVELS)
         s = nj.JobSettings(text="x", engine=key, quality="max")
         assert nj.resolve_steps(s) == meta["steps"]["max"]
@@ -378,3 +381,50 @@ def test_anchor_failure_falls_back_to_plain_voice():
     assert job.progress()["state"] == "done"
     _restore_audio_io(saved)
     assert any("instruct" in kw for _t, kw in backend.calls[2:])      # later chunks use the plain voice again
+
+
+def test_every_target_language_has_an_engine_that_supports_it():
+    for lang in ("ar", "es", "en", "he"):
+        assert lang in nj.LANGUAGES
+        assert [k for k in nj.ENGINE_PREFERENCE[lang] if lang in nj.ENGINES[k]["languages"]] == nj.ENGINE_PREFERENCE[lang]
+    assert "he" not in nj.ENGINES["fast"]["languages"]          # Supertonic-3 has no Hebrew
+
+
+def test_arabic_dialect_selects_the_omnivoice_language_id_and_only_there():
+    s = nj.JobSettings(text="x", engine="quality", language="ar", dialect="egyptian")
+    assert nj.resolve_language_code(s) == "arz"
+    assert nj.resolve_language_code(nj.JobSettings(text="x", engine="quality", language="ar")) == "ar"
+    assert nj.resolve_language_code(nj.JobSettings(text="x", engine="fast", language="ar", dialect="egyptian")) == "ar"
+    assert nj.valid_dialect("ar", "gulf") and not nj.valid_dialect("ar", "british")
+    assert nj.valid_dialect("en", "british") and not nj.valid_dialect("es", "mexican") and nj.valid_dialect("he", "default")
+
+
+def test_english_accent_reaches_both_instruct_and_description():
+    s = nj.JobSettings(text="x", engine="quality", language="en", dialect="british")
+    assert nj.resolve_instruct(s).endswith("british accent")
+    d = nj.JobSettings(text="x", engine="expressive", language="en", dialect="british")
+    assert "british accent" in nj.resolve_description(d)
+    ar = nj.JobSettings(text="x", engine="expressive", language="ar", dialect="egyptian")
+    assert "Egyptian Arabic" in nj.resolve_description(ar)
+
+
+def test_compact_engine_sends_only_a_language_and_follows_the_first_chunk():
+    import numpy as np
+    _patch()
+    saved = _patch_audio_io()
+    job = _job("שלום לכולם. זהו משפט לבדיקה. " * 15, engine="compact", language="he")
+    job.chunks = nj.shorten_first(job.chunks)
+
+    class Long(FakeBackend):
+        sample_rate = 100
+
+        def generate(self, text, **kw):
+            self.calls.append((text, kw))
+            return Fake(300)
+
+    backend = Long(delay=0.0)
+    asyncio.run(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+    _restore_audio_io(saved)
+    first, later = backend.calls[0][1], backend.calls[1][1]
+    assert first == {"language": "he"}
+    assert later.get("ref_audio") and "instruct" not in later and "description" not in later and "num_step" not in later

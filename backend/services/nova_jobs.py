@@ -42,6 +42,7 @@ ENGINES: dict[str, dict[str, Any]] = {
         "prior_s_per_char": 0.03,
         "steps": {"draft": 5, "balanced": 8, "high": 10, "max": 12},
         "native_speed": True,
+        "languages": ["ar", "es", "en"],
     },
     "quality": {
         "engine_id": "omnivoice-subprocess",
@@ -52,6 +53,7 @@ ENGINES: dict[str, dict[str, Any]] = {
         "prior_s_per_char": 0.6,
         "steps": {"draft": 8, "balanced": 16, "high": 24, "max": 32},
         "native_speed": True,
+        "languages": ["ar", "es", "en", "he"],
     },
     "expressive": {
         "engine_id": "voxcpm2",
@@ -62,8 +64,88 @@ ENGINES: dict[str, dict[str, Any]] = {
         "prior_s_per_char": 1.0,
         "steps": {"draft": 6, "balanced": 10, "high": 16, "max": 24},
         "native_speed": False,
+        "languages": ["ar", "es", "en", "he"],
+    },
+    "compact": {
+        "engine_id": "moss-tts-nano",
+        "label": "خفيف متعدد اللغات",
+        "model": "MOSS-TTS-Nano",
+        "note": "نموذج صغير (100 مليون معامل) يعمل بسرعة على المعالج ويدعم العبرية. صوت افتراضي واحد.",
+        "chunk_chars": 200,
+        "prior_s_per_char": 0.08,
+        "steps": {},
+        "native_speed": False,
+        "languages": ["ar", "es", "en", "he"],
     },
 }
+
+# Engines whose first chunk becomes the voice reference for the rest.
+ANCHORED_ENGINES = ("quality", "expressive", "compact")
+
+# ── Languages and dialects ────────────────────────────────────────────────
+LANGUAGES: dict[str, dict[str, Any]] = {
+    "ar": {"label": "العربية", "native": "العربية", "rtl": True},
+    "es": {"label": "الإسبانية", "native": "Español", "rtl": False},
+    "en": {"label": "الإنجليزية", "native": "English", "rtl": False},
+    "he": {"label": "العبرية", "native": "עברית", "rtl": True},
+}
+
+# Best engine to try first for each language on a CPU-only machine, then the rest.
+ENGINE_PREFERENCE: dict[str, list[str]] = {
+    "ar": ["quality", "fast", "compact", "expressive"],
+    "es": ["fast", "quality", "compact", "expressive"],
+    "en": ["fast", "quality", "compact", "expressive"],
+    "he": ["compact", "quality", "expressive"],
+}
+
+# Arabic varieties OmniVoice was trained on (language id, hours of training
+# audio from the parent project's language table). More hours, steadier speech.
+ARABIC_DIALECTS: list[tuple[str, str, str, float, str]] = [
+    # id, Arabic label, OmniVoice language id, training hours, English name (for descriptions)
+    ("msa", "الفصحى المعاصرة", "ar", 1483.5, "Modern Standard"),
+    ("najdi", "نجدية", "ars", 203.5, "Najdi"),
+    ("moroccan", "مغربية (الدارجة)", "ary", 104.7, "Moroccan"),
+    ("gulf", "خليجية", "afb", 98.6, "Gulf"),
+    ("egyptian", "مصرية", "arz", 23.2, "Egyptian"),
+    ("hijazi", "حجازية", "acw", 22.3, "Hijazi"),
+    ("omani", "عُمانية", "acx", 22.0, "Omani"),
+    ("tunisian", "تونسية", "aeb", 21.6, "Tunisian"),
+    ("libyan", "ليبية", "ayl", 20.1, "Libyan"),
+    ("levantine", "شامية", "apc", 15.7, "Levantine"),
+    ("sudanese", "سودانية", "apd", 9.9, "Sudanese"),
+    ("algerian", "جزائرية", "arq", 9.6, "Algerian"),
+]
+ENGLISH_ACCENTS: list[tuple[str, str]] = [
+    ("american", "أمريكية"), ("british", "بريطانية"), ("australian", "أسترالية"),
+    ("canadian", "كندية"), ("indian", "هندية"),
+]
+_ARABIC_BY_ID = {d[0]: d for d in ARABIC_DIALECTS}
+_ACCENT_IDS = {a[0] for a in ENGLISH_ACCENTS}
+# Only engines that can honour a dialect or accent.
+DIALECT_ENGINES = ("quality", "expressive")
+
+
+def dialect_options() -> dict[str, list[dict[str, Any]]]:
+    ar = [{"id": d[0], "label": d[1], "hours": d[3]} for d in ARABIC_DIALECTS]
+    en = [{"id": a[0], "label": a[1], "hours": None} for a in ENGLISH_ACCENTS]
+    return {"ar": ar, "en": en, "es": [], "he": []}
+
+
+def valid_dialect(language: str, dialect: str) -> bool:
+    if dialect in ("", "default"):
+        return True
+    if language == "ar":
+        return dialect in _ARABIC_BY_ID
+    if language == "en":
+        return dialect in _ACCENT_IDS
+    return False
+
+
+def resolve_language_code(s: "JobSettings") -> str:
+    """Language id handed to the engine; an Arabic dialect selects its OmniVoice id."""
+    if s.language == "ar" and s.engine == "quality" and s.dialect in _ARABIC_BY_ID:
+        return _ARABIC_BY_ID[s.dialect][2]
+    return s.language
 
 QUALITY_LEVELS = {
     "draft": "مسودة سريعة",
@@ -145,7 +227,8 @@ class JobSettings:
     speed: float = 1.0              # user multiplier on top of the style
     pitch: float = 0.0              # extra semitones, -6..+6
     depth: int = 0                  # -2..+2, voice depth (quality engine tag)
-    language: str = "ar"
+    language: str = "ar"            # ar | es | en | he
+    dialect: str = "default"        # Arabic variety or English accent (quality / expressive engines)
     quality: str = "balanced"       # key of QUALITY_LEVELS
     wav_bits: int = 16              # 16 | 24 | 32
 
@@ -162,6 +245,8 @@ def resolve_instruct(s: JobSettings) -> str:
         tags.append(s.age)
     idx = max(0, min(4, 2 + int(s.depth)))
     tags.append(PITCH_TAGS[idx])
+    if s.language == "en" and s.dialect in _ACCENT_IDS:
+        tags.append(f"{s.dialect} accent")
     if s.style == "whisper":
         tags.append("whisper")
     return ", ".join(tags)
@@ -201,11 +286,17 @@ def resolve_description(s: JobSettings) -> str:
     depth = _DEPTH_PHRASES.get(max(-2, min(2, int(s.depth))), "")
     if depth:
         parts.append(depth)
+    if s.language == "ar" and s.dialect in _ARABIC_BY_ID and s.dialect != "msa":
+        parts.append(f"speaking {_ARABIC_BY_ID[s.dialect][4]} Arabic")
+    elif s.language == "en" and s.dialect in _ACCENT_IDS:
+        parts.append(f"with a {s.dialect} accent")
     return ", ".join(p for p in parts if p)
 
 
-def resolve_steps(s: JobSettings) -> int:
+def resolve_steps(s: JobSettings) -> Optional[int]:
     steps = ENGINES[s.engine]["steps"]
+    if not steps:
+        return None
     return steps.get(s.quality, steps["balanced"])
 
 
@@ -386,7 +477,7 @@ def polish_clips(clips, sr: int, pause_ms: int, tempo_fn=None):
     return out
 
 
-def shorten_first(chunks: list[str], limit: int = 110) -> list[str]:
+def shorten_first(chunks: list[str], limit: int = 80) -> list[str]:
     """Make the first chunk short: it becomes the voice reference for the rest."""
     if len(chunks) < 2 or len(chunks[0]) <= limit:
         return chunks
@@ -403,6 +494,23 @@ def shorten_first(chunks: list[str], limit: int = 110) -> list[str]:
     else:
         rest = " ".join(sentences[used:])
     return [head] + ([rest] if rest else []) + chunks[1:]
+
+
+def lower_engine_priority() -> None:
+    """Run engine processes below normal priority so the desktop stays usable."""
+    try:
+        import sys
+        import psutil
+        for child in psutil.Process().children(recursive=True):
+            try:
+                if sys.platform == "win32":
+                    child.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+                else:
+                    child.nice(5)
+            except Exception:  # noqa: BLE001 — priority is a courtesy, never a failure
+                pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _to_np(audio):
@@ -597,6 +705,7 @@ class NovaJob:
                     if self._cancel_requested:
                         break
                 self.chunk_started = time.monotonic()
+                lower_engine_priority()
                 try:
                     audio = await self._until_cancelled(self._render_chunk, backend, chunk, sr, semis)
                 except (Exception, _CancelledWhileWaiting):
@@ -649,18 +758,23 @@ class NovaJob:
         s = self.settings
         eng = ENGINES[s.engine]
         speed = effective_speed(s)
-        kw: dict[str, Any] = {"language": s.language, "num_step": resolve_steps(s)}
+        kw: dict[str, Any] = {"language": resolve_language_code(s)}
+        steps = resolve_steps(s)
+        if steps is not None:
+            kw["num_step"] = steps
         if eng["native_speed"]:
             kw["speed"] = speed
-        anchored = self._anchor is not None and s.engine in ("quality", "expressive")
+        anchored = self._anchor is not None and s.engine in ANCHORED_ENGINES
         if s.engine == "fast":
             kw["voice"] = resolve_voice(s)
+        elif s.engine == "compact" and not anchored:
+            pass   # one default voice; later chunks follow the first chunk's audio
         elif anchored:
             # Same voice for every chunk: continue from the first chunk's audio.
             kw["ref_audio"], kw["ref_text"] = self._anchor
         elif s.engine == "quality":
             kw["instruct"] = resolve_instruct(s)
-        else:
+        elif s.engine == "expressive":
             kw["description"] = resolve_description(s)
         if s.engine == "quality":
             kw["seed"] = self._seed
@@ -678,7 +792,7 @@ class NovaJob:
             kw.pop("ref_text", None)
             if s.engine == "quality":
                 kw["instruct"] = resolve_instruct(s)
-            else:
+            elif s.engine == "expressive":
                 kw["description"] = resolve_description(s)
             with self._cancellation.activate():
                 audio = backend.generate(chunk, **kw)
@@ -693,7 +807,7 @@ class NovaJob:
     def _make_anchor(self, audio, text: str, sr: int) -> None:
         """Keep the first chunk as the voice reference for the engines that can follow one."""
         s = self.settings
-        if s.engine not in ("quality", "expressive") or len(self.chunks) < 2:
+        if s.engine not in ANCHORED_ENGINES or len(self.chunks) < 2:
             self._anchor_off = True
             return
         try:

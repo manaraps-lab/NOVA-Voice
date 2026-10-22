@@ -32,7 +32,8 @@ class JobRequest(BaseModel):
     speed: float = Field(1.0, ge=0.6, le=1.6)
     pitch: float = Field(0.0, ge=-6.0, le=6.0)
     depth: int = Field(0, ge=-2, le=2)
-    language: str = "ar"
+    language: Literal["ar", "es", "en", "he"] = "ar"
+    dialect: str = "default"
     quality: str = "balanced"
     wav_bits: Literal[16, 24, 32] = 16
 
@@ -65,7 +66,11 @@ async def _finalize(audio, sr, job: nj.NovaJob) -> dict:
 @router.get("/nova/options")
 def nova_options():
     return {
-        "engines": {k: {"label": v["label"], "model": v["model"], "note": v["note"]} for k, v in nj.ENGINES.items()},
+        "engines": {k: {"label": v["label"], "model": v["model"], "note": v["note"], "languages": v["languages"]} for k, v in nj.ENGINES.items()},
+        "languages": nj.LANGUAGES,
+        "dialects": nj.dialect_options(),
+        "dialect_engines": list(nj.DIALECT_ENGINES),
+        "engine_preference": nj.ENGINE_PREFERENCE,
         "quality_levels": nj.QUALITY_LEVELS,
         "styles": {k: {"label": v["label"]} for k, v in nj.STYLES.items()},
         "ages": nj.AGES,
@@ -81,9 +86,16 @@ async def nova_create(req: JobRequest):
         raise HTTPException(400, "مستوى جودة غير معروف")
     if req.style not in nj.STYLES:
         raise HTTPException(400, "أسلوب إلقاء غير معروف")
+    if req.language not in nj.ENGINES[req.engine]["languages"]:
+        raise HTTPException(
+            400,
+            f"المحرك «{nj.ENGINES[req.engine]['label']}» لا يدعم لغة {nj.LANGUAGES[req.language]['label']}. اختر محركًا آخر من قائمة النماذج.",
+        )
+    if not nj.valid_dialect(req.language, req.dialect):
+        raise HTTPException(400, "لهجة غير معروفة لهذه اللغة")
     text = prepare_text(req.text, req.language)
     chunks = nj.split_for_job(text, nj.ENGINES[req.engine]["chunk_chars"])
-    if req.engine in ("quality", "expressive"):
+    if req.engine in nj.ANCHORED_ENGINES:
         chunks = nj.shorten_first(chunks)
     if not chunks:
         raise HTTPException(400, "النص فارغ")
@@ -210,7 +222,7 @@ def nova_system():
 # ── Engine status panel ────────────────────────────────────────────────────
 # Weight repositories per engine, used only to say whether the model is already
 # on disk (a model that is not cached is fetched on first use).
-_WEIGHTS = {"fast": "Supertone/supertonic-3", "quality": "k2-fsa/OmniVoice", "expressive": "openbmb/VoxCPM2"}
+_WEIGHTS = {"fast": "Supertone/supertonic-3", "quality": "k2-fsa/OmniVoice", "expressive": "openbmb/VoxCPM2", "compact": "OpenMOSS-Team/MOSS-TTS-Nano"}
 _weights_cache: dict[str, tuple[float, Optional[bool]]] = {}
 
 
@@ -234,15 +246,19 @@ def _weights_cached(key: str) -> Optional[bool]:
 _ENGINE_INFO = {
     "fast": {
         "badge": "fastest", "min_ram_gb": 4,
-        "arabic_note": "العربية مدعومة رسميًّا (31 لغة). نموذج صغير (نحو 99 مليون معامل) وسريع جدًّا على المعالج. لا توجد أرقام منشورة للعربية وحدها، فالحكم بالأذن.",
+        "quality_note": "يدعم العربية والإسبانية والإنجليزية (من 31 لغة) ولا يدعم العبرية. نموذج صغير (نحو 99 مليون معامل) وسريع جدًّا على المعالج. لا توجد أرقام منشورة لكل لغة وحدها، فالحكم بالأذن. بلا لهجات.",
     },
     "quality": {
         "badge": "best_arabic", "min_ram_gb": 8,
-        "arabic_note": "الأقوى توثيقًا في العربية: خطأ نطق 1.39% في اختبار متعدد اللغات (ElevenLabs: 1.67%)، و1.92% على FLEURS للعربية الفصحى. يتحكم بالجنس والعمر والنبرة.",
+        "quality_note": "يدعم اللغات الأربع و600 لغة غيرها، ويتحكم بالجنس والعمر واللهجة. العربية الأقوى توثيقًا: خطأ نطق 1.39% في اختبار متعدد اللغات (ElevenLabs: 1.67%) و1.92% على العربية الفصحى. بيانات تدريب الإسبانية والإنجليزية ضخمة، أما العبرية فقليلة (13 ساعة) فهي أضعف هنا.",
     },
     "expressive": {
         "badge": "studio", "min_ram_gb": 16,
-        "arabic_note": "يدعم العربية بين 30 لغة بجودة استوديو 48 كيلوهرتز، ومتوسط الخطأ المنشور 1.68% دون تفصيل للعربية. نموذج بحجم 2 مليار معامل: ثقيل على ذاكرة 8 غيغابايت.",
+        "quality_note": "يدعم اللغات الأربع بجودة استوديو 48 كيلوهرتز ويفهم وصف الإلقاء واللهجة. متوسط الخطأ المنشور 1.68% على 30 لغة دون تفصيل. نموذج بحجم 2 مليار معامل: ثقيل على ذاكرة 8 غيغابايت، وأنسب لجهاز بطاقة رسومية.",
+    },
+    "compact": {
+        "badge": "compact", "min_ram_gb": 4,
+        "quality_note": "نموذج خفيف (100 مليون معامل) يدعم اللغات الأربع، وهو الخيار العملي للعبرية على المعالج. صوت افتراضي واحد وبلا لهجات ولا تحكم بالإلقاء، وجودته دون النماذج الكبيرة.",
     },
 }
 
@@ -268,7 +284,8 @@ def _engine_row(key: str, meta: dict) -> dict:
     }
     extra = _ENGINE_INFO.get(key, {})
     row["badge"] = extra.get("badge")
-    row["arabic_note"] = extra.get("arabic_note", "")
+    row["quality_note"] = extra.get("quality_note", "")
+    row["languages"] = meta.get("languages", [])
     row["min_ram_gb"] = extra.get("min_ram_gb")
     try:
         import psutil

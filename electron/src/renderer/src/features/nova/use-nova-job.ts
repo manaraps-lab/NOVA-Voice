@@ -32,9 +32,11 @@ export interface JobProgress {
   partial: boolean;
 }
 
+export type EngineKey = 'fast' | 'quality' | 'expressive' | 'compact';
+
 export interface JobRequest {
   text: string;
-  engine: 'fast' | 'quality' | 'expressive';
+  engine: EngineKey;
   quality: string;
   wav_bits: 16 | 24 | 32;
   style: string;
@@ -44,7 +46,8 @@ export interface JobRequest {
   speed: number;
   pitch: number;
   depth: number;
-  language: string;
+  language: 'ar' | 'es' | 'en' | 'he';
+  dialect: string;
 }
 
 export interface DeviceStats {
@@ -174,7 +177,7 @@ export function useNovaJob() {
 }
 
 export interface EngineRow {
-  key: 'fast' | 'quality' | 'expressive';
+  key: EngineKey;
   engine_id: string;
   label: string;
   model: string;
@@ -191,8 +194,9 @@ export interface EngineRow {
     steps: { id: string; state: string }[];
   } | null;
   weights_cached: boolean | null;
-  badge: 'fastest' | 'best_arabic' | 'studio' | null;
-  arabic_note: string;
+  badge: 'fastest' | 'best_arabic' | 'studio' | 'compact' | null;
+  quality_note: string;
+  languages: string[];
   min_ram_gb: number | null;
   system_ram_gb: number | null;
   fit: 'ok' | 'tight' | 'heavy' | null;
@@ -267,4 +271,38 @@ export function useNow(on: boolean, ms = 250): number {
     return () => clearInterval(t);
   }, [on, ms]);
   return now;
+}
+
+export interface DialectOption {
+  id: string;
+  label: string;
+  hours: number | null;
+}
+
+export interface NovaOptions {
+  dialects: Record<string, DialectOption[]>;
+  dialect_engines: EngineKey[];
+  engine_preference: Record<string, EngineKey[]>;
+}
+
+/** Dialects, accents and per-language engine order, from the backend (single source of truth). */
+export function useNovaOptions(): NovaOptions | null {
+  const [opts, setOpts] = useState<NovaOptions | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () => {
+      apiJson<NovaOptions>('/nova/options')
+        .then((o) => {
+          if (!stop) setOpts(o);
+        })
+        .catch(() => {
+          if (!stop) setTimeout(load, 4000);
+        });
+    };
+    load();
+    return () => {
+      stop = true;
+    };
+  }, []);
+  return opts;
 }

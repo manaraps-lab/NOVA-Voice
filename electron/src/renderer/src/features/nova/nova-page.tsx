@@ -6,8 +6,7 @@ import {
   Bell,
   BellOff,
   Check,
-  ChevronDown,
-  Cpu,
+    Cpu,
   Download,
   Moon,
   Pause,
@@ -17,6 +16,7 @@ import {
   Sun,
   Volume2,
   VolumeX,
+  X as XIcon,
 } from 'lucide-react';
 import { audioUrl } from '@/lib/api/client';
 import { saveBackendFile } from '@/lib/native-save';
@@ -25,15 +25,20 @@ import { countWords, formatClock } from './format';
 import {
   AGE_LABELS,
   AGE_ORDER,
+  LANGUAGE_LABELS,
+  LANGUAGE_ORDER,
+  type LangCode,
   QUALITY_LABELS,
   QUALITY_ORDER,
   S,
+  SAMPLE_TEXTS,
   STYLE_LABELS,
   STYLE_ORDER,
   VOICES,
 } from './strings';
 import {
   type DeviceStats,
+  type EngineKey,
   type EngineRow,
   type JobRequest,
   type JobProgress,
@@ -42,6 +47,7 @@ import {
   useDeviceStats,
   useEngines,
   useNovaJob,
+  useNovaOptions,
   useNow,
 } from './use-nova-job';
 
@@ -49,7 +55,9 @@ const STORAGE_KEY = 'nova.settings.v1';
 
 interface Prefs {
   text: string;
-  engine: 'fast' | 'quality' | 'expressive';
+  engine: EngineKey;
+  language: LangCode;
+  dialect: string;
   quality: string;
   wavBits: 16 | 24 | 32;
   theme: 'aurora' | 'night';
@@ -65,6 +73,8 @@ interface Prefs {
 const DEFAULTS: Prefs = {
   text: '',
   engine: 'fast',
+  language: 'ar',
+  dialect: 'default',
   quality: 'balanced',
   wavBits: 16,
   theme: 'aurora',
@@ -89,14 +99,28 @@ function loadPrefs(): Prefs {
 
 function Logo() {
   return (
-    <svg viewBox="0 0 40 40" className="nova-logo" aria-hidden="true">
-      <circle cx="20" cy="20" r="20" fill="var(--nv-emerald)" />
-      <g stroke="var(--nv-gold-soft)" strokeWidth="3" strokeLinecap="round">
-        <line x1="10" y1="17" x2="10" y2="23" />
-        <line x1="15" y1="12" x2="15" y2="28" />
-        <line x1="20" y1="8" x2="20" y2="32" />
-        <line x1="25" y1="13" x2="25" y2="27" />
-        <line x1="30" y1="17" x2="30" y2="23" />
+    <svg viewBox="0 0 48 48" className="nova-logo" aria-hidden="true">
+      <defs>
+        <linearGradient id="nvlg-bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#35e8ae" />
+          <stop offset="0.55" stopColor="#12a58a" />
+          <stop offset="1" stopColor="#0a4f55" />
+        </linearGradient>
+        <linearGradient id="nvlg-star" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#fff6cf" />
+          <stop offset="1" stopColor="#f2bb4d" />
+        </linearGradient>
+      </defs>
+      <rect x="1" y="1" width="46" height="46" rx="15" fill="url(#nvlg-bg)" />
+      <path
+        d="M24 6C25.4 16.5 28 20.4 42 24C28 27.6 25.4 31.5 24 42C22.6 31.5 20 27.6 6 24C20 20.4 22.6 16.5 24 6Z"
+        fill="url(#nvlg-star)"
+      />
+      <g stroke="#0a3f45" strokeWidth="2.3" strokeLinecap="round" opacity="0.9">
+        <line x1="18.5" y1="21.8" x2="18.5" y2="26.2" />
+        <line x1="21.8" y1="19" x2="21.8" y2="29" />
+        <line x1="25.2" y1="20.6" x2="25.2" y2="27.4" />
+        <line x1="28.5" y1="22.4" x2="28.5" y2="25.6" />
       </g>
     </svg>
   );
@@ -377,13 +401,19 @@ function Dot({ on }: { on: boolean | null }) {
   return <span className={`nova-dot ${on === null ? 'is-unknown' : on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
 }
 
-const BADGES: Record<string, string> = { fastest: S.badgeFastest, best_arabic: S.badgeBestArabic, studio: S.badgeStudio };
+const BADGES: Record<string, string> = {
+  fastest: S.badgeFastest,
+  best_arabic: S.badgeBestArabic,
+  studio: S.badgeStudio,
+  compact: S.badgeCompact,
+};
 
 function EnginePanel(props: {
   rows: EngineRow[] | null;
   selected: string;
   locked: boolean;
-  onSelect: (key: Prefs['engine']) => void;
+  onSelect: (key: EngineKey) => void;
+  onClose: () => void;
   onRefresh: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -397,13 +427,19 @@ function EnginePanel(props: {
     props.onRefresh();
     setBusy(null);
   };
-  const order = ['fast', 'quality', 'expressive'];
+  const order = ['fast', 'quality', 'compact', 'expressive'];
   const rows = props.rows ? [...props.rows].sort((x, y) => order.indexOf(x.key) - order.indexOf(y.key)) : null;
   return (
-    <section className="nova-card nova-enginepanel" id="nova-engine-panel" aria-label={S.modelsTitle}>
+    <div className="nova-overlay" role="dialog" aria-modal="true" aria-label={S.modelsTitle} data-nosound onClick={props.onClose}>
+    <section className="nova-card nova-panel nova-enginepanel" id="nova-engine-panel" onClick={(e) => e.stopPropagation()}>
       <div className="nova-panel-head">
         <h2>{S.modelsTitle}</h2>
-        <button type="button" className="nova-link" onClick={props.onRefresh}>{S.refresh}</button>
+        <div className="nova-panel-actions">
+          <button type="button" className="nova-link" onClick={props.onRefresh}>{S.refresh}</button>
+          <button type="button" className="nova-icon-btn" onClick={props.onClose} aria-label={S.close}>
+            <XIcon size={18} />
+          </button>
+        </div>
       </div>
       <p className="nova-hint">{S.modelsHint}</p>
       <ul className="nova-model-list" role="radiogroup" aria-label={S.chooseEngine}>
@@ -426,12 +462,14 @@ function EnginePanel(props: {
                   {r.label}
                   {r.badge && BADGES[r.badge] && <span className="nova-badge">{BADGES[r.badge]}</span>}
                 </strong>
-                <span className="nova-muted" dir="auto">{r.model}</span>
+                <span className="nova-muted" dir="auto">
+                  {r.model} · {S.supports}: {r.languages.map((c) => LANGUAGE_LABELS[c as LangCode]?.ar ?? c).join('، ')}
+                </span>
                 <span className="nova-muted">
                   {r.available ? `${S.connected}${r.loaded ? ` · ${S.loadedInMemory}` : ''}` : S.notConnected}
                   {r.available && r.weights_cached === false ? ` · ${S.weightsMissing}` : ''}
                 </span>
-                {r.arabic_note && (
+                {r.quality_note && (
                   <button
                     type="button"
                     className="nova-link nova-details-btn"
@@ -440,7 +478,7 @@ function EnginePanel(props: {
                     {open === r.key ? S.lessDetails : S.moreDetails}
                   </button>
                 )}
-                {open === r.key && r.arabic_note && <span className="nova-note-ar" dir="auto">{r.arabic_note}</span>}
+                {open === r.key && r.quality_note && <span className="nova-note-ar" dir="auto">{r.quality_note}</span>}
                 {r.fit && r.min_ram_gb && (
                   <span className={`nova-fit is-${r.fit}`}>
                     {r.fit === 'ok' ? S.fitOk : r.fit === 'tight' ? S.fitTight : S.fitHeavy}
@@ -471,6 +509,7 @@ function EnginePanel(props: {
       </ul>
       {err && <p className="nova-warn" dir="auto">{err}</p>}
     </section>
+    </div>
   );
 }
 
@@ -483,20 +522,51 @@ export function NovaPage() {
   const live = isActive(progress?.state);
   const stats = useDeviceStats(live);
   const [showModels, setShowModels] = useState(false);
+  const [engineNotice, setEngineNotice] = useState<string | null>(null);
+  const options = useNovaOptions();
   const engines = useEngines(true, showModels ? 3000 : 15000);
   const currentEngine = engines.rows?.find((r) => r.key === prefs.engine) ?? null;
   const engineReady = currentEngine ? currentEngine.available : true;
   const anyOnline = engines.rows ? engines.rows.some((r) => r.available) : null;
+
+  /** Best ready engine that supports `lang`, in the backend's order for that language. */
+  const bestEngineFor = useCallback(
+    (lang: LangCode): EngineRow | null => {
+      const rows = engines.rows;
+      if (!rows) return null;
+      const order = options?.engine_preference?.[lang] ?? ['quality', 'fast', 'compact', 'expressive'];
+      for (const key of order) {
+        const r = rows.find((x) => x.key === key);
+        if (r && r.available && r.languages.includes(lang)) return r;
+      }
+      return null;
+    },
+    [engines.rows, options],
+  );
+
   const autoPicked = useRef(false);
   useEffect(() => {
     if (autoPicked.current || !engines.rows) return;
     autoPicked.current = true;
     const cur = engines.rows.find((r) => r.key === prefs.engine);
-    if (cur && !cur.available) {
-      const pick = ['quality', 'fast', 'expressive'].map((k) => engines.rows!.find((r) => r.key === k)).find((r) => r && r.available);
+    if (!cur || !cur.available || !cur.languages.includes(prefs.language)) {
+      const pick = bestEngineFor(prefs.language);
       if (pick) setPrefs((p) => ({ ...p, engine: pick.key }));
     }
-  }, [engines.rows, prefs.engine]);
+  }, [engines.rows, prefs.engine, prefs.language, bestEngineFor]);
+
+  const changeLanguage = (lang: LangCode) => {
+    setEngineNotice(null);
+    setPrefs((p) => ({ ...p, language: lang, dialect: 'default' }));
+    const cur = engines.rows?.find((r) => r.key === prefs.engine);
+    if (cur && !cur.languages.includes(lang)) {
+      const pick = bestEngineFor(lang);
+      if (pick) {
+        setPrefs((p) => ({ ...p, engine: pick.key }));
+        setEngineNotice(`${S.switchedEngine} ${pick.label}`);
+      }
+    }
+  };
   const set = useCallback(<K extends keyof Prefs>(key: K, value: Prefs[K]) => setPrefs((p) => ({ ...p, [key]: value })), []);
 
   useEffect(() => {
@@ -531,14 +601,18 @@ export function NovaPage() {
   const voice = prefs.voice && voices.includes(prefs.voice) ? prefs.voice : voices[0];
   const fast = prefs.engine === 'fast';
   const words = useMemo(() => countWords(prefs.text), [prefs.text]);
-  const canGenerate = prefs.text.trim().length > 0 && !live && !job.starting && engineReady;
+  const langOk = currentEngine ? currentEngine.languages.includes(prefs.language) : true;
+  const dialectList = options?.dialects?.[prefs.language] ?? [];
+  const dialectEngineOk = options ? options.dialect_engines.includes(prefs.engine) : prefs.engine === 'quality' || prefs.engine === 'expressive';
+  const compact = prefs.engine === 'compact';
+  const canGenerate = prefs.text.trim().length > 0 && !live && !job.starting && engineReady && langOk;
 
   const generate = () => {
     if (!canGenerate) return;
     sfx.start();
     const { wavBits, theme: _theme, ...rest } = prefs;
     void _theme;
-    const req: JobRequest = { ...rest, wav_bits: wavBits, voice, language: 'ar' };
+    const req: JobRequest = { ...rest, wav_bits: wavBits, voice, dialect: dialectEngineOk ? prefs.dialect : 'default' };
     void job.start(req);
   };
 
@@ -556,10 +630,7 @@ export function NovaPage() {
       <header className="nova-header">
         <div className="nova-brand">
           <Logo />
-          <div>
-            <h1>{S.appName}</h1>
-            <p>{S.tagline}</p>
-          </div>
+          <h1>{S.appName}</h1>
         </div>
         <div className="nova-header-actions" data-nodrag>
           <button
@@ -570,7 +641,7 @@ export function NovaPage() {
             title={S.modelsTitle}
             aria-label={S.modelsTitle}
           >
-            <Dot on={anyOnline} /> <Cpu size={17} /> <span>{S.models}</span>
+            <Dot on={currentEngine ? currentEngine.available : anyOnline} /> <Cpu size={17} /> <span>{S.models}{currentEngine ? ` · ${currentEngine.label}` : ''}</span>
           </button>
           <button
             type="button"
@@ -620,32 +691,12 @@ export function NovaPage() {
 
       <main className="nova-main">
         <div className="nova-col-main">
-          <button
-            type="button"
-            className={`nova-model-toggle${showModels ? ' is-open' : ''}`}
-            data-nosound
-            aria-expanded={showModels}
-            aria-controls="nova-engine-panel"
-            onClick={() => { sfx.click(); setShowModels((v) => !v); }}
-          >
-            <Dot on={currentEngine ? currentEngine.available : null} />
-            <Cpu size={18} />
-            <span className="nova-model-toggle-text">
-              {S.models}
-              {currentEngine ? <span className="nova-muted"> · {currentEngine.label}</span> : null}
-            </span>
-            <ChevronDown size={18} className="nova-chev" />
-          </button>
-          {showModels && (
-            <EnginePanel rows={engines.rows} selected={prefs.engine} locked={live} onSelect={(k) => set('engine', k)} onRefresh={engines.refresh} />
-          )}
-
           <section className="nova-card nova-text-card">
             <div className="nova-text-head">
               <label htmlFor="nova-text">{S.textLabel}</label>
               <div className="nova-text-tools">
                 {!prefs.text && (
-                  <button type="button" className="nova-link" onClick={() => set('text', S.sampleText)}>
+                  <button type="button" className="nova-link" onClick={() => set('text', SAMPLE_TEXTS[prefs.language])}>
                     {S.sample}
                   </button>
                 )}
@@ -658,7 +709,8 @@ export function NovaPage() {
             </div>
             <textarea
               id="nova-text"
-              dir="auto"
+              dir={LANGUAGE_LABELS[prefs.language].rtl ? 'rtl' : 'ltr'}
+              lang={prefs.language}
               value={prefs.text}
               placeholder={S.textPlaceholder}
               onChange={(e) => set('text', e.target.value)}
@@ -673,6 +725,12 @@ export function NovaPage() {
                 <AudioLines size={20} /> {S.generate}
               </button>
             </div>
+            {!langOk && currentEngine && (
+              <p className="nova-warn" dir="auto">
+                {currentEngine.label}: {S.langUnsupported}{' '}
+                <button type="button" className="nova-link" onClick={() => setShowModels(true)}>{S.models}</button>
+              </p>
+            )}
             {!engineReady && currentEngine && (
               <p className="nova-warn" dir="auto">
                 {S.engineNotReady} {currentEngine.reason || S.notConnected}{' '}
@@ -692,6 +750,28 @@ export function NovaPage() {
         <aside className="nova-col-side">
           <section className="nova-card nova-controls">
             <div className="nova-field">
+              <span className="nova-label">{S.language}</span>
+              <div className="nova-langs" role="radiogroup" aria-label={S.language}>
+                {LANGUAGE_ORDER.map((code) => (
+                  <button
+                    key={code}
+                    type="button"
+                    role="radio"
+                    aria-checked={prefs.language === code}
+                    disabled={live}
+                    className={`nova-lang${prefs.language === code ? ' is-on' : ''}`}
+                    onClick={() => changeLanguage(code)}
+                  >
+                    <strong>{LANGUAGE_LABELS[code].ar}</strong>
+                    <span dir={LANGUAGE_LABELS[code].rtl ? 'rtl' : 'ltr'}>{LANGUAGE_LABELS[code].native}</span>
+                  </button>
+                ))}
+              </div>
+              {prefs.language === 'he' && <p className="nova-hint">{S.hebrewNote}</p>}
+              {engineNotice && <p className="nova-hint">{engineNotice}</p>}
+            </div>
+
+            <div className="nova-field">
               <span className="nova-label">{S.style}</span>
               <div className="nova-chips">
                 {STYLE_ORDER.map((id) => (
@@ -709,6 +789,32 @@ export function NovaPage() {
               </div>
             </div>
 
+            <div className="nova-field">
+              <label className="nova-label" htmlFor="nova-dialect">{S.dialect}</label>
+              <select
+                id="nova-dialect"
+                className="nova-select"
+                value={dialectEngineOk ? prefs.dialect : 'default'}
+                disabled={live || !dialectEngineOk || dialectList.length === 0}
+                onChange={(e) => set('dialect', e.target.value)}
+              >
+                <option value="default">{S.dialectDefault}</option>
+                {dialectList.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}
+                    {d.hours ? ` — ${Math.round(d.hours).toLocaleString('en-US')} ${S.dialectHours}` : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="nova-hint">
+                {dialectList.length === 0 ? S.dialectNone : dialectEngineOk ? '' : S.dialectNeedsEngine}
+              </p>
+            </div>
+
+            {compact ? (
+              <p className="nova-hint">{S.voiceFixed}</p>
+            ) : (
+              <>
             <div className="nova-field">
               <span className="nova-label">{S.gender}</span>
               <Segmented
@@ -752,8 +858,12 @@ export function NovaPage() {
                 </select>
               </div>
             )}
+              </>
+            )}
 
             <div className="nova-field">
+              {!compact && (
+                <>
               <span className="nova-label">{S.audioQuality}</span>
               <Segmented
                 label={S.audioQuality}
@@ -763,6 +873,8 @@ export function NovaPage() {
                 options={QUALITY_ORDER.map((q) => ({ value: q, label: QUALITY_LABELS[q] }))}
               />
               <p className="nova-hint">{S.qualityHint}</p>
+                </>
+              )}
               <label className="nova-label" htmlFor="nova-bits">{S.fileFormat}</label>
               <select id="nova-bits" className="nova-select" value={prefs.wavBits} disabled={live} onChange={(e) => set('wavBits', Number(e.target.value) as 16 | 24 | 32)}>
                 <option value={16}>{S.bits16}</option>
@@ -782,6 +894,16 @@ export function NovaPage() {
           {live && <DevicePanel stats={stats} />}
         </aside>
       </main>
+      {showModels && (
+        <EnginePanel
+          rows={engines.rows}
+          selected={prefs.engine}
+          locked={live}
+          onSelect={(k) => { set('engine', k); setEngineNotice(null); }}
+          onRefresh={engines.refresh}
+          onClose={() => setShowModels(false)}
+        />
+      )}
     </div>
   );
 }

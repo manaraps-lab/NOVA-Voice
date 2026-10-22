@@ -67,6 +67,15 @@ jobs:
           for f in cairo-arabic-400-normal cairo-arabic-600-normal cairo-arabic-700-normal cairo-latin-400-normal cairo-latin-700-normal; do
             curl -fsSL --retry 3 -o "$dir/$f.woff2" "$base/$f.woff2"
           done
+          # Main face: IBM Plex Sans Arabic (OFL). Cairo above stays as the fallback,
+          # so a missing file here degrades the look instead of failing the build.
+          plex=https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans-arabic@5/files
+          for w in 400 500 600 700; do
+            for sub in arabic latin; do
+              f="ibm-plex-sans-arabic-$sub-$w-normal"
+              curl -fsSL --retry 3 -o "$dir/$f.woff2" "$plex/$f.woff2" || { echo "::warning::could not fetch $f"; rm -f "$dir/$f.woff2"; }
+            done
+          done
           ls -l "$dir"
 
       # Informational: these show problems early but do not block the installer.

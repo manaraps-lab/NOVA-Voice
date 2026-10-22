@@ -1,19 +1,17 @@
 /** NOVA Voice interface text (Arabic only: the app is Arabic-first and personal). */
 export const S = {
   appName: 'NOVA Voice',
-  tagline: 'حوّل النص إلى صوت عربي طبيعي',
   textLabel: 'النص',
   textPlaceholder: 'اكتب النص هنا أو الصقه، ومهما طال سيُقسَّم تلقائيًا ويُولَّد بالتتابع…',
   clear: 'مسح',
   sample: 'نص تجريبي',
-  sampleText:
-    'السلام عليكم ورحمة الله وبركاته. أهلًا بكم في نوفا فويس، تطبيق يحوّل النص المكتوب إلى صوت عربي واضح، يعمل بالكامل على جهازك دون اتصال بالإنترنت.',
   chars: 'حرفًا',
   words: 'كلمة',
   generate: 'توليد الصوت',
   engine: 'المحرك',
   engineFast: 'سريع',
   engineExpressive: 'الأعلى تعبيرًا',
+  engineCompact: 'خفيف متعدد اللغات',
   engineQuality: 'عالي الجودة',
   chooseEngine: 'اختر المحرك',
   engineFastHint: 'أسرع بكثير، ويناسب النصوص الطويلة والمراجعة السريعة.',
@@ -88,6 +86,18 @@ export const S = {
   needsRam: 'يحتاج نحو',
   yourRam: 'ذاكرة جهازك',
   gb: 'غيغابايت',
+  language: 'لغة التوليد',
+  dialect: 'اللهجة',
+  dialectDefault: 'القياسية',
+  dialectHours: 'ساعة تدريب',
+  dialectNeedsEngine: 'اللهجات متاحة في المحركين «عالي الجودة» و«الأعلى تعبيرًا» فقط.',
+  dialectNone: 'لا لهجات منفصلة لهذه اللغة.',
+  switchedEngine: 'اختير محرك يدعم هذه اللغة تلقائيًا:',
+  badgeCompact: 'الأنسب للعبرية',
+  supports: 'اللغات المدعومة',
+  hebrewNote: 'العبرية بلا تشكيل قد تُنطق بأخطاء؛ نتائجها أضعف من بقية اللغات حاليًا.',
+  langUnsupported: 'هذا المحرك لا يدعم اللغة المختارة. اختر محركًا آخر من',
+  voiceFixed: 'صوت افتراضي واحد في هذا المحرك.',
   moreDetails: 'تفاصيل الأداء بالعربية ▾',
   lessDetails: 'إخفاء التفاصيل ▴',
   heavyWarn: 'هذا النموذج أثقل من ذاكرة جهازك، وقد يكون بطيئًا جدًّا أو لا يكتمل. جرّب «عالي الجودة» أو «سريع» للنتائج الأفضل هنا.',
@@ -117,7 +127,6 @@ export const S = {
   notifyDone: 'اكتمل توليد الصوت.',
   notifyCancelled: 'أُلغي التوليد وحُفظ الناتج الجزئي.',
   notifyError: 'تعذّر إكمال التوليد.',
-  gb: 'غيغابايت',
 } as const;
 
 export const STYLE_ORDER = [
@@ -160,4 +169,20 @@ export const AGE_LABELS: Record<(typeof AGE_ORDER)[number], string> = {
 export const VOICES: Record<'male' | 'female', string[]> = {
   male: ['M1', 'M3', 'M4', 'M5'],
   female: ['F3', 'F4', 'F5'],
+};
+
+export const LANGUAGE_ORDER = ['ar', 'es', 'en', 'he'] as const;
+export type LangCode = (typeof LANGUAGE_ORDER)[number];
+export const LANGUAGE_LABELS: Record<LangCode, { ar: string; native: string; rtl: boolean }> = {
+  ar: { ar: 'العربية', native: 'العربية', rtl: true },
+  es: { ar: 'الإسبانية', native: 'Español', rtl: false },
+  en: { ar: 'الإنجليزية', native: 'English', rtl: false },
+  he: { ar: 'العبرية', native: 'עברית', rtl: true },
+};
+
+export const SAMPLE_TEXTS: Record<LangCode, string> = {
+  ar: 'السلام عليكم ورحمة الله وبركاته. أهلًا بكم في نوفا فويس، تطبيق يحوّل النص المكتوب إلى صوت واضح، يعمل بالكامل على جهازك دون اتصال بالإنترنت.',
+  es: 'Hola y bienvenidos a NOVA Voice. Esta aplicación convierte el texto escrito en voz clara y natural, y funciona por completo en tu equipo, sin conexión a internet.',
+  en: 'Hello and welcome to NOVA Voice. This app turns written text into clear, natural speech, and it runs entirely on your own computer without an internet connection.',
+  he: 'שלום וברוכים הבאים ל-NOVA Voice. האפליקציה הזאת הופכת טקסט כתוב לדיבור ברור וטבעי, ופועלת כולה על המחשב שלכם ללא חיבור לאינטרנט.',
 };
