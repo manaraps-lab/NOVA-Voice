@@ -21,7 +21,7 @@ import {
 import { audioUrl } from '@/lib/api/client';
 import { saveBackendFile } from '@/lib/native-save';
 import { sfx } from './click-sound';
-import { countWords, formatClock } from './format';
+import { countWords, formatApprox, formatClock } from './format';
 import {
   AGE_LABELS,
   AGE_ORDER,
@@ -40,12 +40,15 @@ import {
   type DeviceStats,
   type EngineKey,
   type EngineRow,
+  type Hardware,
   type JobRequest,
   type JobProgress,
   installEngine,
   isActive,
   useDeviceStats,
   useEngines,
+  useEstimate,
+  useHardware,
   useNovaJob,
   useNovaOptions,
   useNow,
@@ -415,6 +418,8 @@ function EnginePanel(props: {
   onSelect: (key: EngineKey) => void;
   onClose: () => void;
   onRefresh: () => void;
+  hardware: Hardware | null;
+  onBenchmark: (row: EngineRow) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -441,6 +446,17 @@ function EnginePanel(props: {
           </button>
         </div>
       </div>
+      {props.hardware && (
+        <p className="nova-machine" dir="auto">
+          <strong>{S.yourMachine}:</strong>{' '}
+          <bdi className="nova-num">{props.hardware.cpu_cores}</bdi> {S.cores}
+          {props.hardware.ram_total_gb ? <> · <bdi className="nova-num">{props.hardware.ram_total_gb}</bdi> {S.gb}</> : null}
+          {' · '}
+          {props.hardware.family === 'cuda' || props.hardware.family === 'rocm'
+            ? <bdi>{props.hardware.gpu_name} ({props.hardware.vram_gb} {S.gb})</bdi>
+            : S.noGpu}
+        </p>
+      )}
       <p className="nova-hint">{S.modelsHint}</p>
       <ul className="nova-model-list" role="radiogroup" aria-label={S.chooseEngine}>
         {(rows ?? []).map((r) => {
@@ -479,14 +495,24 @@ function EnginePanel(props: {
                   </button>
                 )}
                 {open === r.key && r.quality_note && <span className="nova-note-ar" dir="auto">{r.quality_note}</span>}
-                {r.fit && r.min_ram_gb && (
+                {r.fit && (
                   <span className={`nova-fit is-${r.fit}`}>
                     {r.fit === 'ok' ? S.fitOk : r.fit === 'tight' ? S.fitTight : S.fitHeavy}
                     {' · '}
-                    {S.needsRam} <bdi className="nova-num">{r.min_ram_gb}</bdi> {S.gb}
-                    {r.system_ram_gb ? <> · {S.yourRam} <bdi className="nova-num">{r.system_ram_gb}</bdi> {S.gb}</> : null}
+                    {r.runs_on === 'gpu' ? S.runsOnGpu : S.runsOnCpu}
+                    {' · '}
+                    {r.runs_on === 'gpu' && r.min_vram_gb ? (
+                      <>{S.needsVram} <bdi className="nova-num">{r.min_vram_gb}</bdi> {S.gb} {S.vramOf}</>
+                    ) : (
+                      <>{S.needsRam} <bdi className="nova-num">{r.min_ram_gb}</bdi> {S.gb}</>
+                    )}
                   </span>
                 )}
+                <span className="nova-muted">
+                  {r.bench
+                    ? <>{S.measuredSpeed}: <bdi className="nova-num">{r.bench.chars_per_min.toLocaleString('en-US')}</bdi> {S.charsPerMin}</>
+                    : S.neverMeasured}
+                </span>
                 {!r.available && r.reason && <span className="nova-reason" dir="auto">{r.reason}</span>}
                 {installing && <span className="nova-note">{S.installing}</span>}
                 {r.install?.state === 'failed' && r.install.error && (
@@ -500,6 +526,17 @@ function EnginePanel(props: {
                   onClick={(e) => { e.stopPropagation(); void install(r.engine_id); }}
                 >
                   {S.install}
+                </button>
+              )}
+              {r.available && (
+                <button
+                  type="button"
+                  className="nova-btn nova-btn-soft"
+                  disabled={props.locked}
+                  title={S.benchHint}
+                  onClick={(e) => { e.stopPropagation(); props.onBenchmark(r); }}
+                >
+                  {S.measure}
                 </button>
               )}
             </li>
@@ -524,6 +561,7 @@ export function NovaPage() {
   const [showModels, setShowModels] = useState(false);
   const [engineNotice, setEngineNotice] = useState<string | null>(null);
   const options = useNovaOptions();
+  const hardware = useHardware();
   const engines = useEngines(true, showModels ? 3000 : 15000);
   const currentEngine = engines.rows?.find((r) => r.key === prefs.engine) ?? null;
   const engineReady = currentEngine ? currentEngine.available : true;
@@ -534,14 +572,14 @@ export function NovaPage() {
     (lang: LangCode): EngineRow | null => {
       const rows = engines.rows;
       if (!rows) return null;
-      const order = options?.engine_preference?.[lang] ?? ['quality', 'fast', 'compact', 'expressive'];
+      const order = hardware?.engine_preference?.[lang] ?? options?.engine_preference?.[lang] ?? ['quality', 'fast', 'compact', 'expressive'];
       for (const key of order) {
         const r = rows.find((x) => x.key === key);
         if (r && r.available && r.languages.includes(lang)) return r;
       }
       return null;
     },
-    [engines.rows, options],
+    [engines.rows, options, hardware],
   );
 
   const autoPicked = useRef(false);
@@ -567,6 +605,31 @@ export function NovaPage() {
       }
     }
   };
+  const estimateSeconds = useEstimate(prefs.engine, prefs.quality, prefs.text.trim().length, currentEngine?.bench?.at ?? null);
+
+  // First-run advice: nothing ready for this language yet -> point at the engine that suits this machine.
+  const noEngineReady = engines.rows ? !bestEngineFor(prefs.language) : false;
+  const recommended = useMemo(() => {
+    if (!noEngineReady || !engines.rows) return null;
+    const order = hardware?.engine_preference?.[prefs.language] ?? [];
+    for (const key of order) {
+      const r = engines.rows.find((x) => x.key === key);
+      if (r && r.installable && r.languages.includes(prefs.language)) return r;
+    }
+    return null;
+  }, [noEngineReady, engines.rows, hardware, prefs.language]);
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const installRecommended = async () => {
+    if (!recommended) return;
+    setSetupBusy(true);
+    setSetupError(null);
+    const failure = await installEngine(recommended.engine_id);
+    if (failure) setSetupError(failure);
+    engines.refresh();
+    setSetupBusy(false);
+  };
+
   const set = useCallback(<K extends keyof Prefs>(key: K, value: Prefs[K]) => setPrefs((p) => ({ ...p, [key]: value })), []);
 
   useEffect(() => {
@@ -576,6 +639,11 @@ export function NovaPage() {
       // Settings simply are not remembered.
     }
   }, [prefs]);
+
+  useEffect(() => {
+    if (progress?.state === 'done' && progress.result?.bench) engines.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress?.state]);
 
   // Sound + notification when a job reaches an end state.
   const lastState = useRef<string | undefined>(undefined);
@@ -616,6 +684,29 @@ export function NovaPage() {
     void job.start(req);
   };
 
+  const runBenchmark = (row: EngineRow) => {
+    if (live) return;
+    const lang = (row.languages.includes(prefs.language) ? prefs.language : row.languages[0]) as LangCode;
+    const req: JobRequest = {
+      text: 'benchmark',
+      engine: row.key,
+      quality: prefs.quality,
+      wav_bits: 16,
+      style: 'natural',
+      gender: prefs.gender,
+      age: prefs.age,
+      voice: null,
+      speed: 1,
+      pitch: 0,
+      depth: 0,
+      language: lang,
+      dialect: 'default',
+      benchmark: true,
+    };
+    setShowModels(false);
+    void job.start(req);
+  };
+
   const onClickCapture = (e: ReactMouseEvent) => {
     const t = e.target as HTMLElement;
     if (t.closest('[data-nosound]')) return;
@@ -623,7 +714,8 @@ export function NovaPage() {
     else if (t.closest('button, a')) sfx.click();
   };
 
-  const showResult = progress && progress.result && !live;
+  const showResult = progress && progress.result && progress.result.filename && !live;
+  const benchResult = progress && progress.result && progress.result.bench && !live ? progress.result.bench : null;
 
   return (
     <div className="nova-root" data-theme={prefs.theme} dir="rtl" lang="ar" onClickCapture={onClickCapture}>
@@ -691,6 +783,27 @@ export function NovaPage() {
 
       <main className="nova-main">
         <div className="nova-col-main">
+          {noEngineReady && (
+            <section className="nova-card nova-setup" role="status">
+              <strong>{S.setupTitle}</strong>
+              <span>{S.setupNone}</span>
+              {recommended ? (
+                <>
+                  <span>{S.setupRecommend} <strong>{recommended.label}</strong> ({recommended.model})</span>
+                  <div className="nova-actions">
+                    <button type="button" className="nova-btn nova-btn-primary" disabled={setupBusy || recommended.install?.state === 'running'} onClick={() => void installRecommended()}>
+                      {setupBusy || recommended.install?.state === 'running' ? S.installing : S.setupInstall}
+                    </button>
+                    <button type="button" className="nova-link" onClick={() => setShowModels(true)}>{S.setupOpen}</button>
+                  </div>
+                </>
+              ) : (
+                <button type="button" className="nova-link" onClick={() => setShowModels(true)}>{S.setupOpen}</button>
+              )}
+              {setupError && <span className="nova-warn" dir="auto">{setupError}</span>}
+            </section>
+          )}
+
           <section className="nova-card nova-text-card">
             <div className="nova-text-head">
               <label htmlFor="nova-text">{S.textLabel}</label>
@@ -725,6 +838,18 @@ export function NovaPage() {
                 <AudioLines size={20} /> {S.generate}
               </button>
             </div>
+            {prefs.text.trim() && !live && (
+              <p className="nova-hint">
+                {estimateSeconds != null ? (
+                  <>{S.estimate} <strong>{formatApprox(estimateSeconds)}</strong></>
+                ) : (
+                  <>
+                    {S.estimateHint}{' '}
+                    <button type="button" className="nova-link" onClick={() => setShowModels(true)}>{S.models}</button>
+                  </>
+                )}
+              </p>
+            )}
             {!langOk && currentEngine && (
               <p className="nova-warn" dir="auto">
                 {currentEngine.label}: {S.langUnsupported}{' '}
@@ -745,6 +870,15 @@ export function NovaPage() {
 
           {progress && <ProgressCard p={progress} receivedAt={job.receivedAt} onPause={() => { sfx.pause(); void job.pause(); }} onResume={() => { sfx.resume(); void job.resume(); }} onCancel={() => void job.cancel()} />}
           {showResult && <ResultCard p={progress} onNew={job.reset} />}
+          {benchResult && (
+            <section className="nova-card nova-bench-done">
+              <strong>{S.benchDone}</strong>
+              <span>
+                {S.measuredSpeed}: <bdi className="nova-num">{benchResult.chars_per_min.toLocaleString('en-US')}</bdi> {S.charsPerMin}
+              </span>
+              <button type="button" className="nova-link" onClick={job.reset}>{S.close}</button>
+            </section>
+          )}
         </div>
 
         <aside className="nova-col-side">
@@ -902,6 +1036,8 @@ export function NovaPage() {
           onSelect={(k) => { set('engine', k); setEngineNotice(null); }}
           onRefresh={engines.refresh}
           onClose={() => setShowModels(false)}
+          hardware={hardware}
+          onBenchmark={runBenchmark}
         />
       )}
     </div>

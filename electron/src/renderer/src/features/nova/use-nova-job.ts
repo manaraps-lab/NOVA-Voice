@@ -12,6 +12,13 @@ export type JobState =
   | 'cancelled'
   | 'error';
 
+export interface BenchSummary {
+  chars_per_min: number;
+  rtf: number | null;
+  steps: number | null;
+  at: number | null;
+}
+
 export interface JobProgress {
   id: string;
   state: JobState;
@@ -28,7 +35,7 @@ export interface JobProgress {
   chars_total: number;
   engine: string;
   error: string | null;
-  result: { id: string; filename: string; duration: number } | null;
+  result: { id: string; filename: string; duration: number; bench?: BenchSummary | null } | null;
   partial: boolean;
 }
 
@@ -48,6 +55,7 @@ export interface JobRequest {
   depth: number;
   language: 'ar' | 'es' | 'en' | 'he';
   dialect: string;
+  benchmark?: boolean;
 }
 
 export interface DeviceStats {
@@ -200,6 +208,10 @@ export interface EngineRow {
   min_ram_gb: number | null;
   system_ram_gb: number | null;
   fit: 'ok' | 'tight' | 'heavy' | null;
+  runs_on: 'gpu' | 'cpu';
+  min_vram_gb: number | null;
+  vram_gb: number | null;
+  bench: BenchSummary | null;
 }
 
 /** Which engines can render now. Polls while `enabled`. */
@@ -305,4 +317,63 @@ export function useNovaOptions(): NovaOptions | null {
     };
   }, []);
   return opts;
+}
+
+export interface Hardware {
+  cpu_cores: number;
+  ram_total_gb: number | null;
+  ram_available_gb: number | null;
+  family: string;
+  gpu_name: string;
+  vram_gb: number;
+  tier: 'gpu' | 'cpu_strong' | 'cpu_mid' | 'cpu_low';
+  engine_preference: Record<string, EngineKey[]>;
+}
+
+/** This machine's profile and the engine order that suits it. */
+export function useHardware(): Hardware | null {
+  const [hw, setHw] = useState<Hardware | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () => {
+      apiJson<Hardware>('/nova/hardware')
+        .then((h) => {
+          if (!stop) setHw(h);
+        })
+        .catch(() => {
+          if (!stop) setTimeout(load, 4000);
+        });
+    };
+    load();
+    return () => {
+      stop = true;
+    };
+  }, []);
+  return hw;
+}
+
+/** Expected render time from this machine's own speed measurement (null until it was measured). */
+export function useEstimate(engine: EngineKey, quality: string, chars: number, benchStamp: number | null): number | null {
+  const [seconds, setSeconds] = useState<number | null>(null);
+  useEffect(() => {
+    if (chars <= 0) {
+      setSeconds(null);
+      return;
+    }
+    let stop = false;
+    const t = setTimeout(() => {
+      apiJson<{ seconds: number | null }>(`/nova/estimate?engine=${engine}&quality=${quality}&chars=${chars}`)
+        .then((r) => {
+          if (!stop) setSeconds(r.seconds);
+        })
+        .catch(() => {
+          if (!stop) setSeconds(null);
+        });
+    }, 600);
+    return () => {
+      stop = true;
+      clearTimeout(t);
+    };
+  }, [engine, quality, chars, benchStamp]);
+  return seconds;
 }

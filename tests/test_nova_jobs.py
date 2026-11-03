@@ -428,3 +428,64 @@ def test_compact_engine_sends_only_a_language_and_follows_the_first_chunk():
     first, later = backend.calls[0][1], backend.calls[1][1]
     assert first == {"language": "he"}
     assert later.get("ref_audio") and "instruct" not in later and "description" not in later and "num_step" not in later
+
+
+# ── hardware profile, recommendations and measured speed ─────────────────────
+from services import nova_hw as hw  # noqa: E402
+
+_LOW = {"cpu_cores": 4, "ram_total_gb": 7.7, "family": "cpu", "vram_gb": 0.0}
+_GPU = {"cpu_cores": 16, "ram_total_gb": 32.0, "family": "cuda", "vram_gb": 12.0}
+_LANGS = {k: v["languages"] for k, v in nj.ENGINES.items()}
+
+
+def test_machine_tiers():
+    assert hw.classify(_LOW) == "cpu_low" and hw.classify(_GPU) == "gpu"
+    assert hw.classify({"ram_total_gb": 16, "family": "cpu"}) == "cpu_mid"
+    assert hw.classify({"ram_total_gb": 5, "family": "cuda", "vram_gb": 4}) == "cpu_low"     # a small GPU does not count
+
+
+def test_fit_uses_nominal_ram_and_prefers_the_gpu_when_it_helps():
+    assert hw.fit("fast", _LOW) == ("ok", "cpu")
+    assert hw.fit("quality", _LOW) == ("tight", "cpu")          # 7.7 GB counts as 8
+    assert hw.fit("expressive", _LOW)[0] == "heavy"
+    assert hw.fit("expressive", _GPU) == ("ok", "gpu")
+
+
+def test_engine_order_drops_heavy_engines_to_the_end_and_changes_on_a_gpu():
+    cpu = hw.engine_order("ar", _LOW, nj.ENGINE_PREFERENCE["ar"], _LANGS)
+    assert cpu[0] == "quality" and cpu[-1] == "expressive"
+    assert hw.engine_order("he", _LOW, nj.ENGINE_PREFERENCE["he"], _LANGS)[0] == "compact"
+    assert hw.engine_order("he", _GPU, nj.ENGINE_PREFERENCE["he"], _LANGS)[0] == "expressive"
+    assert "fast" not in hw.engine_order("he", _GPU, nj.ENGINE_PREFERENCE["he"], _LANGS)    # no Hebrew in Supertonic
+
+
+def test_measured_speed_gives_an_estimate_scaled_by_steps(tmp_path=None):
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(), "bench.json")
+    entry = hw.record_bench("quality", 0.5, 16, 0.07, path=path)
+    assert hw.load_bench(path)["quality"]["s_per_char"] == 0.5
+    assert hw.estimate_seconds(entry, 16, 200) == 100.0
+    assert hw.estimate_seconds(entry, 8, 200) == 50.0           # half the steps, half the time
+    assert hw.estimate_seconds(None, 16, 200) is None and hw.estimate_seconds(entry, 16, 0) is None
+    s = hw.summarize(entry)
+    assert s["chars_per_min"] == 120 and s["rtf"] == round(0.5 / 0.07, 2)
+
+
+def test_every_engine_has_needs_and_benchmark_sentences_for_every_language():
+    assert set(hw.ENGINE_NEEDS) == set(nj.ENGINES)
+    assert all(len(hw.BENCH_TEXT[lang]) >= 3 for lang in nj.LANGUAGES)
+
+
+def test_chunk_log_records_characters_time_and_audio():
+    _patch()
+    job = _job("جملة للاختبار. " * 40)
+    backend = FakeBackend(delay=0.01)
+    asyncio.run(job.run(get_backend=lambda _id: backend, finalize=_finalize))
+    assert job.chunk_log and all(c > 0 and t > 0 and a > 0 for c, t, a in job.chunk_log)
+    assert sum(c for c, _t, _a in job.chunk_log) == job.chars_done
+
+
+def test_light_profile_never_probes_the_accelerator():
+    hw._cache["hw"], hw._cache["at"] = None, 0.0
+    light = hw.hardware_profile(allow_probe=False)
+    assert light["family"] == "cpu" and hw._cache["hw"] is None          # not cached: the full probe still runs later

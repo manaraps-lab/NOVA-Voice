@@ -561,6 +561,7 @@ class NovaJob:
     _cancel_evt: asyncio.Event = field(default_factory=asyncio.Event)
     _parts: list = field(default_factory=list)
     _texts: list = field(default_factory=list)
+    chunk_log: list = field(default_factory=list)   # (characters, seconds spent, seconds of audio) per finished chunk
     _anchor: Optional[tuple] = None        # (wav path, its text): the voice every chunk follows
     _anchor_off: bool = False
     _seed: int = field(default_factory=lambda: __import__('random').randint(1, 2**31 - 1))
@@ -720,6 +721,7 @@ class NovaJob:
                 self.chunk_started = None
                 self.gen_seconds_done += spent
                 self.chars_done += len(chunk)
+                self.chunk_log.append((len(chunk), spent, (audio.shape[-1] / sr) if audio is not None else 0.0))
                 self.done_chunks = i + 1
                 if audio is not None and audio.shape[-1] > 0:
                     self._parts.append(audio)

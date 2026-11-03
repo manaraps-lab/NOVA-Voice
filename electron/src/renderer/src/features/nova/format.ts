@@ -13,3 +13,12 @@ export function countWords(text: string): number {
   const t = text.trim();
   return t ? t.split(/\s+/).length : 0;
 }
+
+/** "about N seconds / minutes / hours" in Arabic, for time estimates. */
+export function formatApprox(totalSeconds: number): string {
+  const s = Math.max(1, Math.round(totalSeconds));
+  if (s < 90) return `${s} ثانية`;
+  if (s < 5400) return `${Math.round(s / 60)} دقيقة`;
+  const h = Math.round((s / 3600) * 10) / 10;
+  return `${h} ساعة`;
+}

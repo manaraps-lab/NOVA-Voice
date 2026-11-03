@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import DATA_DIR
+from services import nova_hw as hw
 from services import nova_jobs as nj
 
 logger = logging.getLogger("omnivoice.nova")
@@ -36,6 +37,7 @@ class JobRequest(BaseModel):
     dialect: str = "default"
     quality: str = "balanced"
     wav_bits: Literal[16, 24, 32] = 16
+    benchmark: bool = False   # measure this engine's speed with fixed sentences; saves no audio
 
 
 def prepare_text(text: str, language: str) -> str:
@@ -48,6 +50,18 @@ def prepare_text(text: str, language: str) -> str:
     except Exception:  # noqa: BLE001 — normalisation is an improvement, not a requirement
         logger.warning("nova: text normalisation skipped", exc_info=True)
     return out.strip()
+
+
+async def _finalize_bench(audio, sr, job: nj.NovaJob) -> dict:
+    """Record the warm speed of this engine; no file is kept."""
+    warm = job.chunk_log[1:] or job.chunk_log
+    chars = sum(c for c, _s, _a in warm)
+    seconds = sum(t for _c, t, _a in warm)
+    speech = sum(a for _c, _t, a in warm)
+    if chars <= 0 or seconds <= 0:
+        raise RuntimeError("تعذّر قياس السرعة")
+    entry = hw.record_bench(job.settings.engine, seconds / chars, nj.resolve_steps(job.settings), speech / chars)
+    return {"id": "benchmark", "filename": "", "duration": speech, "bench": hw.summarize(entry)}
 
 
 async def _finalize(audio, sr, job: nj.NovaJob) -> dict:
@@ -63,6 +77,31 @@ async def _finalize(audio, sr, job: nj.NovaJob) -> dict:
     return {"id": meta["id"], "filename": meta["filename"], "duration": meta["duration"]}
 
 
+def _engine_preference() -> dict[str, list[str]]:
+    """Per-language engine order for THIS machine (GPU boxes prefer the large models)."""
+    profile = hw.hardware_profile()
+    languages_of = {k: v["languages"] for k, v in nj.ENGINES.items()}
+    return {lang: hw.engine_order(lang, profile, nj.ENGINE_PREFERENCE[lang], languages_of) for lang in nj.LANGUAGES}
+
+
+@router.get("/nova/hardware")
+async def nova_hardware():
+    """What this machine is, for the models panel and the first-run advice."""
+    profile = await asyncio.to_thread(hw.hardware_profile)
+    return {**profile, "engine_preference": await asyncio.to_thread(_engine_preference)}
+
+
+@router.get("/nova/estimate")
+def nova_estimate(engine: str, chars: int, quality: str = "balanced"):
+    """Expected render time from this machine's own measurement, or null without one."""
+    if engine not in nj.ENGINES:
+        raise HTTPException(400, "محرك غير معروف")
+    steps = nj.ENGINES[engine]["steps"]
+    steps_now = steps.get(quality, steps.get("balanced")) if steps else None
+    seconds = hw.estimate_seconds(hw.load_bench().get(engine), steps_now, max(0, min(chars, 2_000_000)))
+    return {"seconds": seconds}
+
+
 @router.get("/nova/options")
 def nova_options():
     return {
@@ -70,7 +109,7 @@ def nova_options():
         "languages": nj.LANGUAGES,
         "dialects": nj.dialect_options(),
         "dialect_engines": list(nj.DIALECT_ENGINES),
-        "engine_preference": nj.ENGINE_PREFERENCE,
+        "engine_preference": _engine_preference(),
         "quality_levels": nj.QUALITY_LEVELS,
         "styles": {k: {"label": v["label"]} for k, v in nj.STYLES.items()},
         "ages": nj.AGES,
@@ -93,13 +132,19 @@ async def nova_create(req: JobRequest):
         )
     if not nj.valid_dialect(req.language, req.dialect):
         raise HTTPException(400, "لهجة غير معروفة لهذه اللغة")
-    text = prepare_text(req.text, req.language)
-    chunks = nj.split_for_job(text, nj.ENGINES[req.engine]["chunk_chars"])
-    if req.engine in nj.ANCHORED_ENGINES:
-        chunks = nj.shorten_first(chunks)
+    if req.benchmark:
+        # Fixed sentences, one chunk each: the first absorbs the model load and is
+        # left out of the measurement.
+        chunks = list(hw.BENCH_TEXT[req.language])
+        text = " ".join(chunks)
+    else:
+        text = prepare_text(req.text, req.language)
+        chunks = nj.split_for_job(text, nj.ENGINES[req.engine]["chunk_chars"])
+        if req.engine in nj.ANCHORED_ENGINES:
+            chunks = nj.shorten_first(chunks)
     if not chunks:
         raise HTTPException(400, "النص فارغ")
-    settings = nj.JobSettings(**{**req.model_dump(), "text": text})
+    settings = nj.JobSettings(**{**req.model_dump(exclude={"benchmark"}), "text": text})
     if nj.MANAGER.active() is not None:
         raise HTTPException(409, "هناك عملية توليد قيد التنفيذ")
     # Validate BEFORE registering the job: a job registered and then rejected
@@ -119,7 +164,7 @@ async def nova_create(req: JobRequest):
         from services.engine_memory import evict_other_tts_engines
         await evict_other_tts_engines(nj.ENGINES[req.engine]["engine_id"])
         from services.tts_backend import get_engine_instance_for
-        job._task = asyncio.create_task(job.run(get_backend=get_engine_instance_for, finalize=_finalize))
+        job._task = asyncio.create_task(job.run(get_backend=get_engine_instance_for, finalize=_finalize_bench if req.benchmark else _finalize))
     except Exception as exc:
         job.state = "error"
         job.error = f"{type(exc).__name__}: {exc}"[:400]
@@ -245,32 +290,22 @@ def _weights_cached(key: str) -> Optional[bool]:
 # it realistically needs on a CPU-only machine (estimates, shown as such).
 _ENGINE_INFO = {
     "fast": {
-        "badge": "fastest", "min_ram_gb": 4,
+        "badge": "fastest",
         "quality_note": "يدعم العربية والإسبانية والإنجليزية (من 31 لغة) ولا يدعم العبرية. نموذج صغير (نحو 99 مليون معامل) وسريع جدًّا على المعالج. لا توجد أرقام منشورة لكل لغة وحدها، فالحكم بالأذن. بلا لهجات.",
     },
     "quality": {
-        "badge": "best_arabic", "min_ram_gb": 8,
+        "badge": "best_arabic",
         "quality_note": "يدعم اللغات الأربع و600 لغة غيرها، ويتحكم بالجنس والعمر واللهجة. العربية الأقوى توثيقًا: خطأ نطق 1.39% في اختبار متعدد اللغات (ElevenLabs: 1.67%) و1.92% على العربية الفصحى. بيانات تدريب الإسبانية والإنجليزية ضخمة، أما العبرية فقليلة (13 ساعة) فهي أضعف هنا.",
     },
     "expressive": {
-        "badge": "studio", "min_ram_gb": 16,
+        "badge": "studio",
         "quality_note": "يدعم اللغات الأربع بجودة استوديو 48 كيلوهرتز ويفهم وصف الإلقاء واللهجة. متوسط الخطأ المنشور 1.68% على 30 لغة دون تفصيل. نموذج بحجم 2 مليار معامل: ثقيل على ذاكرة 8 غيغابايت، وأنسب لجهاز بطاقة رسومية.",
     },
     "compact": {
-        "badge": "compact", "min_ram_gb": 4,
+        "badge": "compact",
         "quality_note": "نموذج خفيف (100 مليون معامل) يدعم اللغات الأربع، وهو الخيار العملي للعبرية على المعالج. صوت افتراضي واحد وبلا لهجات ولا تحكم بالإلقاء، وجودته دون النماذج الكبيرة.",
     },
 }
-
-
-def _fit(total_gb: float, need_gb: float) -> str:
-    # Judge by the nominal size: a "8 GB" laptop reports ~7.7 GB usable.
-    nominal = round(total_gb)
-    if nominal >= need_gb + 2:
-        return "ok"
-    if nominal >= need_gb:
-        return "tight"
-    return "heavy"
 
 
 def _engine_row(key: str, meta: dict) -> dict:
@@ -286,15 +321,13 @@ def _engine_row(key: str, meta: dict) -> dict:
     row["badge"] = extra.get("badge")
     row["quality_note"] = extra.get("quality_note", "")
     row["languages"] = meta.get("languages", [])
-    row["min_ram_gb"] = extra.get("min_ram_gb")
-    try:
-        import psutil
-        total = psutil.virtual_memory().total / 2**30
-        row["system_ram_gb"] = round(total, 1)
-        row["fit"] = _fit(total, extra["min_ram_gb"]) if extra.get("min_ram_gb") else None
-    except Exception:  # noqa: BLE001
-        row["system_ram_gb"] = None
-        row["fit"] = None
+    profile = hw.hardware_profile(allow_probe=False)
+    row["min_ram_gb"] = hw.ENGINE_NEEDS[key]["ram"]
+    row["min_vram_gb"] = hw.ENGINE_NEEDS[key]["vram"]
+    row["system_ram_gb"] = profile.get("ram_total_gb")
+    row["vram_gb"] = profile.get("vram_gb") or None
+    row["fit"], row["runs_on"] = hw.fit(key, profile)
+    row["bench"] = hw.summarize(hw.load_bench().get(key))
     try:
         cls = tts_backend.get_backend_class(eid)
         ok, msg = cls.is_available()

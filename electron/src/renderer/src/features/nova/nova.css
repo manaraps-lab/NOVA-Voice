@@ -269,3 +269,8 @@
 .nova-lang.is-on { border-color: var(--nv-emerald); background: var(--nv-emerald-l); box-shadow: 0 0 0 1.5px var(--nv-emerald) inset; }
 .nova-panel-actions { display: flex; align-items: center; gap: 12px; }
 .nova-brand h1 { margin: 0; }
+
+.nova-machine { margin: 0; font-size: 13.5px; color: var(--nv-ink-2); line-height: 1.8; }
+.nova-setup, .nova-bench-done { display: flex; flex-direction: column; gap: 8px; border-color: var(--nv-emerald); }
+.nova-setup .nova-actions { display: flex; align-items: center; gap: 14px; }
+.nova-bench-done { flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
