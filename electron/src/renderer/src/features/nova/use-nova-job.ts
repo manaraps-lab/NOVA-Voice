@@ -274,6 +274,43 @@ export function useDeviceStats(enabled: boolean, intervalMs = 1000) {
   return stats;
 }
 
+/** Keep the machine awake while a job renders (screen wake lock; harmless where unsupported). */
+export function useKeepAwake(on: boolean) {
+  useEffect(() => {
+    if (!on) return;
+    type Lock = { release: () => Promise<void>; addEventListener: (t: 'release', f: () => void) => void };
+    const nav = navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<Lock> } };
+    if (!nav.wakeLock) return;
+    let lock: Lock | null = null;
+    let stop = false;
+    const acquire = () => {
+      nav.wakeLock!
+        .request('screen')
+        .then((l) => {
+          if (stop) void l.release().catch(() => undefined);
+          else {
+            lock = l;
+            l.addEventListener('release', () => {
+              if (lock === l) lock = null;
+            });
+          }
+        })
+        .catch(() => undefined);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !lock) acquire();
+    };
+    acquire();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stop = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      void lock?.release().catch(() => undefined);
+      lock = null;
+    };
+  }, [on]);
+}
+
 /** Re-render every `ms` while `on`, so clocks tick between polls. */
 export function useNow(on: boolean, ms = 250): number {
   const [now, setNow] = useState(() => Date.now());

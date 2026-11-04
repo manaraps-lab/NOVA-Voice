@@ -45,6 +45,7 @@ import {
   type JobProgress,
   installEngine,
   isActive,
+  useKeepAwake,
   useDeviceStats,
   useEngines,
   useEstimate,
@@ -557,6 +558,7 @@ export function NovaPage() {
   const job = useNovaJob();
   const { progress } = job;
   const live = isActive(progress?.state);
+  useKeepAwake(live);
   const stats = useDeviceStats(live);
   const [showModels, setShowModels] = useState(false);
   const [engineNotice, setEngineNotice] = useState<string | null>(null);
