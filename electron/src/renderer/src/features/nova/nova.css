@@ -274,3 +274,5 @@
 .nova-setup, .nova-bench-done { display: flex; flex-direction: column; gap: 8px; border-color: var(--nv-emerald); }
 .nova-setup .nova-actions { display: flex; align-items: center; gap: 14px; }
 .nova-bench-done { flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+
+.nova-diag { width: 100%; min-height: 140px; margin: 8px 0; font: 12px/1.5 ui-monospace, Consolas, monospace; direction: ltr; text-align: left; border-radius: 10px; border: 1px solid var(--nv-line, rgba(127,127,127,.3)); background: transparent; color: inherit; padding: 8px; }

@@ -489,3 +489,51 @@ def test_light_profile_never_probes_the_accelerator():
     hw._cache["hw"], hw._cache["at"] = None, 0.0
     light = hw.hardware_profile(allow_probe=False)
     assert light["family"] == "cpu" and hw._cache["hw"] is None          # not cached: the full probe still runs later
+
+
+def test_thread_limit_keeps_cores_free_and_respects_user_setting():
+    import os
+    names = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+    saved_env = {k: os.environ.get(k) for k in names}
+    real = nj.os.cpu_count
+    try:
+        for k in names:
+            os.environ.pop(k, None)
+        nj.os.cpu_count = lambda: 8
+        assert nj.limit_engine_threads() == 6
+        os.environ["OMP_NUM_THREADS"] = "3"
+        assert nj.limit_engine_threads() == 3          # an explicit setting wins
+        os.environ.pop("OMP_NUM_THREADS")
+        nj.os.cpu_count = lambda: 2
+        assert nj.limit_engine_threads() == 1
+    finally:
+        nj.os.cpu_count = real
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_release_other_engines_keeps_the_one_in_use():
+    from services import tts_backend as tb
+
+    class A:
+        id = "a"
+        unloaded = False
+    class B:
+        id = "b"
+    class Inst:
+        def __init__(self): self.unloaded = False
+        def unload(self): self.unloaded = True
+    ia, ib = Inst(), Inst()
+    saved = dict(tb._ENGINE_INSTANCES)
+    try:
+        tb._ENGINE_INSTANCES.clear()
+        tb._ENGINE_INSTANCES.update({A: ia, B: ib})
+        assert tb.release_other_engines(A) == ["b"]
+        assert ib.unloaded and not ia.unloaded
+        assert A in tb._ENGINE_INSTANCES and B not in tb._ENGINE_INSTANCES
+    finally:
+        tb._ENGINE_INSTANCES.clear()
+        tb._ENGINE_INSTANCES.update(saved)

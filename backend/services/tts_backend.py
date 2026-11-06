@@ -4360,6 +4360,34 @@ def release_idle_engines(
     return released
 
 
+def release_other_engines(keep_cls) -> list[str]:
+    """Unload every cached engine except ``keep_cls`` that is not mid-use.
+
+    A small machine cannot hold two TTS models at once: leaving a finished
+    engine resident while another renders pushes it into swap, which slows
+    both and can take the whole machine down. Never raises.
+    """
+    pending: list[tuple[str, object]] = []
+    with _ENGINE_CACHE_LOCK:
+        for cls in list(_ENGINE_INSTANCES):
+            if cls is keep_cls or _ENGINE_IN_USE.get(cls):
+                continue
+            inst = _ENGINE_INSTANCES.pop(cls, None)
+            _ENGINE_LAST_USED.pop(cls, None)
+            if inst is not None:
+                pending.append((getattr(cls, "id", cls.__name__), inst))
+    released: list[str] = []
+    for engine_id, inst in pending:
+        try:
+            inst.unload()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("release_other_engines: %s.unload() raised: %s", engine_id, exc)
+        released.append(engine_id)
+    if released:
+        logger.info("Freed memory before a job: released %s", ", ".join(released))
+    return released
+
+
 # ── Shared generation-time engine resolution (issue #312 class) ───────────
 #
 # dub_generate.py and batch.py used to call services.model_manager.get_model()

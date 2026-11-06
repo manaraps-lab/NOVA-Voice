@@ -1,4 +1,5 @@
 import './nova.css';
+import { apiJson } from '@/lib/api/client';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { Link } from '@tanstack/react-router';
 import {
@@ -433,6 +434,20 @@ function EnginePanel(props: {
     props.onRefresh();
     setBusy(null);
   };
+  const [diag, setDiag] = useState<{ note: string | null; text: string | null }>({ note: null, text: null });
+  const copyDiag = async () => {
+    try {
+      const r = await apiJson<{ text: string }>('/nova/diagnostics');
+      try {
+        await navigator.clipboard.writeText(r.text);
+        setDiag({ note: S.diagCopied, text: null });
+      } catch {
+        setDiag({ note: S.diagFailed, text: r.text });
+      }
+    } catch (e) {
+      setDiag({ note: String(e instanceof Error ? e.message : e), text: null });
+    }
+  };
   const order = ['fast', 'quality', 'compact', 'expressive'];
   const rows = props.rows ? [...props.rows].sort((x, y) => order.indexOf(x.key) - order.indexOf(y.key)) : null;
   return (
@@ -441,12 +456,15 @@ function EnginePanel(props: {
       <div className="nova-panel-head">
         <h2>{S.modelsTitle}</h2>
         <div className="nova-panel-actions">
+          <button type="button" className="nova-link" onClick={copyDiag}>{S.diagCopy}</button>
           <button type="button" className="nova-link" onClick={props.onRefresh}>{S.refresh}</button>
           <button type="button" className="nova-icon-btn" onClick={props.onClose} aria-label={S.close}>
             <XIcon size={18} />
           </button>
         </div>
       </div>
+      {diag.note && <p className="nova-hint" role="status">{diag.note}</p>}
+      {diag.text && <textarea className="nova-diag" readOnly dir="ltr" value={diag.text} onFocus={(e) => e.currentTarget.select()} />}
       {props.hardware && (
         <p className="nova-machine" dir="auto">
           <strong>{S.yourMachine}:</strong>{' '}
@@ -575,9 +593,15 @@ export function NovaPage() {
       const rows = engines.rows;
       if (!rows) return null;
       const order = hardware?.engine_preference?.[lang] ?? options?.engine_preference?.[lang] ?? ['quality', 'fast', 'compact', 'expressive'];
+      // An engine this machine measured as very slow is a last resort, not the default.
+      const usable = (r: EngineRow) => r.available && r.languages.includes(lang);
       for (const key of order) {
         const r = rows.find((x) => x.key === key);
-        if (r && r.available && r.languages.includes(lang)) return r;
+        if (r && usable(r) && !(r.bench && r.bench.chars_per_min < 30)) return r;
+      }
+      for (const key of order) {
+        const r = rows.find((x) => x.key === key);
+        if (r && usable(r)) return r;
       }
       return null;
     },

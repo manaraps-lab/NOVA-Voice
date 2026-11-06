@@ -214,6 +214,44 @@ async def nova_cancel(job_id: str):
 _psutil_primed = False
 
 
+@router.get("/nova/diagnostics")
+def nova_diagnostics():
+    """One plain-text report the user can paste in a chat: machine, speed, recent jobs, log tail."""
+    import platform
+    lines: list[str] = ["NOVA Voice diagnostics", f"platform: {platform.platform()}"]
+    try:
+        h = hw.hardware_profile(allow_probe=False)
+        lines.append(f"hardware: {h}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"hardware: unavailable ({exc})")
+    try:
+        import psutil
+        vm, sw = psutil.virtual_memory(), psutil.swap_memory()
+        lines.append(f"ram: total {vm.total / 2**30:.1f} GB, free {vm.available / 2**30:.1f} GB; swap used {sw.used / 2**30:.1f} of {sw.total / 2**30:.1f} GB")
+        freq = psutil.cpu_freq()
+        if freq:
+            lines.append(f"cpu freq: now {freq.current:.0f} MHz, max {freq.max:.0f} MHz")
+        lines.append(f"cpu load: {psutil.cpu_percent(interval=None)}%")
+        kids = [(c.name(), round(c.memory_info().rss / 2**30, 2)) for c in psutil.Process().children(recursive=True)]
+        lines.append(f"engine processes (name, GB): {kids}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"system probe failed: {exc}")
+    lines.append(f"speed measurements: {hw.load_bench()}")
+    lines.append(f"threads limit env: OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
+    lines.append("recent jobs:")
+    for entry in list(nj.JOB_HISTORY):
+        lines.append(f"  {entry}")
+    try:
+        from api.routers.system import _tail_rolling
+        from core.config import LOG_PATH
+        tail, _total, _paths = _tail_rolling(LOG_PATH, 80)
+        lines.append("log tail (last 80 lines):")
+        lines.extend(l.rstrip() for l in tail)
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"log unavailable: {exc}")
+    return {"text": "\n".join(lines)}
+
+
 @router.get("/nova/system")
 def nova_system():
     """Device indicators shown while rendering."""

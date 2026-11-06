@@ -17,6 +17,8 @@ rough per-engine prior is available and the job says so (``calibrating``).
 from __future__ import annotations
 
 import asyncio
+import collections
+import os
 import logging
 import re
 import time
@@ -513,6 +515,34 @@ def lower_engine_priority() -> None:
         pass
 
 
+def limit_engine_threads() -> int:
+    """Leave a couple of cores free so the machine stays cool and responsive.
+
+    Engines started after this inherit the limit; one the user already set
+    through the environment is respected. Returns the thread count in effect.
+    """
+    cores = os.cpu_count() or 1
+    n = max(1, cores - 2) if cores > 4 else max(1, cores - 1)
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(var, str(n))
+    try:
+        return int(os.environ.get("OMP_NUM_THREADS", n))
+    except ValueError:
+        return n
+
+
+def _free_ram_gb() -> Optional[float]:
+    try:
+        import psutil
+        return round(psutil.virtual_memory().available / 2**30, 2)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# The last few jobs (timings and memory), kept for the diagnostics report.
+JOB_HISTORY: "collections.deque[dict]" = collections.deque(maxlen=8)
+
+
 def _to_np(audio):
     import numpy as np
     x = audio.detach().float().cpu().numpy()
@@ -688,6 +718,16 @@ class NovaJob:
             self._cancellation = InferenceCancellation()
         aborted = False
         try:
+            self._ram_start = _free_ram_gb()
+            threads = limit_engine_threads()
+            try:
+                from services import tts_backend
+                keep = tts_backend.get_backend_class(eng["engine_id"])
+                await asyncio.to_thread(tts_backend.release_other_engines, keep)
+            except Exception:  # noqa: BLE001 — freeing memory is a courtesy
+                logger.debug("nova job %s: could not free other engines", self.id, exc_info=True)
+            logger.info("nova job %s: engine=%s lang=%s chars=%d threads=%d free_ram_gb=%s",
+                        self.id, s.engine, s.language, sum(len(c) for c in self.chunks), threads, self._ram_start)
             try:
                 backend = await self._until_cancelled(get_backend, eng["engine_id"])
             except _CancelledWhileWaiting:
@@ -752,6 +792,21 @@ class NovaJob:
         finally:
             self.finished = time.monotonic()
             self.chunk_started = None
+            try:
+                entry = {
+                    "engine": s.engine, "language": s.language, "state": self.state,
+                    "chunks": f"{self.done_chunks}/{len(self.chunks)}",
+                    "chars": self.chars_done,
+                    "seconds": round(self.finished - (self.started or self.finished), 1),
+                    "free_ram_gb_start": getattr(self, "_ram_start", None),
+                    "free_ram_gb_end": _free_ram_gb(),
+                    "per_chunk_s": [round(c[1], 1) for c in self.chunk_log][:12],
+                    "error": self.error,
+                }
+                JOB_HISTORY.append(entry)
+                logger.info("nova job %s finished: %s", self.id, entry)
+            except Exception:  # noqa: BLE001
+                pass
             if self._anchor_dir:
                 import shutil
                 shutil.rmtree(self._anchor_dir, ignore_errors=True)
