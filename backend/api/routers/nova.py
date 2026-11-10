@@ -66,7 +66,9 @@ async def _finalize_bench(audio, sr, job: nj.NovaJob) -> dict:
 
 async def _finalize(audio, sr, job: nj.NovaJob) -> dict:
     from api.routers.generation import _apply_effect_chain, _finalize_generation
-    audio = await asyncio.to_thread(_apply_effect_chain, audio, sr, "broadcast")
+    # "raw": our own polish already trimmed, paced and levelled the take; the
+    # parent's broadcast chain (compressor, EQ, limiter) only added a processed edge.
+    audio = await asyncio.to_thread(_apply_effect_chain, audio, sr, "raw")
     s = job.settings
     _, meta = await _finalize_generation(
         audio, sr, text=s.text, history_mode="nova", ref_audio_path=None,
@@ -74,7 +76,26 @@ async def _finalize(audio, sr, job: nj.NovaJob) -> dict:
         resolved_profile_id=None, used_seed=None, start_time=time.time() - job.elapsed(),
         wav_bits=s.wav_bits,
     )
+    await asyncio.to_thread(_save_raw_copy, job, sr, meta.get("filename") or "")
     return {"id": meta["id"], "filename": meta["filename"], "duration": meta["duration"]}
+
+
+def _save_raw_copy(job: nj.NovaJob, sr: int, filename: str) -> None:
+    """Write ``<name>.raw.wav`` beside the result: the engine's output with no processing."""
+    if job.raw_audio is None or not filename:
+        return
+    try:
+        import numpy as np
+        import soundfile as sf
+        from core.config import OUTPUTS_DIR
+        stem = os.path.splitext(os.path.basename(filename))[0]
+        x = job.raw_audio.detach().float().cpu().numpy().reshape(-1)
+        peak = float(np.max(np.abs(x))) if x.size else 0.0
+        if peak > 0.98:
+            x = x * (0.98 / peak)
+        sf.write(os.path.join(OUTPUTS_DIR, f"{stem}.raw.wav"), x, sr, subtype="PCM_16")
+    except Exception:  # noqa: BLE001 — a comparison copy must never fail the job
+        logger.warning("nova: could not save the raw comparison copy", exc_info=True)
 
 
 def _engine_preference() -> dict[str, list[str]]:

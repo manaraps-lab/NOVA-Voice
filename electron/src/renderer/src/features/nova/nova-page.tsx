@@ -358,6 +358,7 @@ function ProgressCard(props: {
 
 function ResultCard({ p, onNew }: { p: JobProgress; onNew: () => void }) {
   const [saved, setSaved] = useState(false);
+  const [rawOk, setRawOk] = useState(true);
   const res = p.result;
   if (!res) return null;
   const url = audioUrl(res.filename);
@@ -379,6 +380,12 @@ function ResultCard({ p, onNew }: { p: JobProgress; onNew: () => void }) {
     <section className="nova-card nova-result">
       <h2>{p.partial ? S.partialResult : S.result} <bdi className="nova-num nova-muted">· {formatClock(res.duration)}</bdi></h2>
       <audio controls src={url} className="nova-audio" />
+      {rawOk && res.filename && (
+        <div className="nova-rawbox">
+          <p className="nova-muted">{S.rawLabel}</p>
+          <audio controls src={audioUrl(res.filename.replace(/\.wav$/i, '.raw.wav'))} className="nova-audio" onError={() => setRawOk(false)} />
+        </div>
+      )}
       <div className="nova-actions">
         <button type="button" className="nova-btn nova-btn-primary" onClick={save}>
           {saved ? <Check size={18} /> : <Download size={18} />} {saved ? S.saved : S.save}

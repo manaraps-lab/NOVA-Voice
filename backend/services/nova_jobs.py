@@ -592,6 +592,7 @@ class NovaJob:
     _parts: list = field(default_factory=list)
     _texts: list = field(default_factory=list)
     chunk_log: list = field(default_factory=list)   # (characters, seconds spent, seconds of audio) per finished chunk
+    raw_audio: Any = None                  # untouched joined engine output (for comparison)
     _anchor: Optional[tuple] = None        # (wav path, its text): the voice every chunk follows
     _anchor_off: bool = False
     _seed: int = field(default_factory=lambda: __import__('random').randint(1, 2**31 - 1))
@@ -886,12 +887,18 @@ class NovaJob:
         import torch
         pause_ms = STYLES.get(self.settings.style, STYLES["natural"])["pause_ms"]
         clips = [(_to_np(a), t) for a, t in zip(self._parts, self._texts)]
-
-        def tempo(x, factor):
-            y = change_tempo(torch.from_numpy(np.ascontiguousarray(x)).unsqueeze(0), sr, factor)
-            return y.detach().cpu().numpy().reshape(-1)
-
-        out = polish_clips(clips, sr, pause_ms, tempo)
+        # The untouched engine output, joined with a plain pause, kept so a listener
+        # can tell whether a flaw comes from the engine or from our processing.
+        gap = np.zeros(int(sr * 0.25), dtype=np.float32)
+        pieces = []
+        for k, (x, _t) in enumerate(clips):
+            if k:
+                pieces.append(gap)
+            pieces.append(x)
+        self.raw_audio = torch.from_numpy(np.concatenate(pieces)).unsqueeze(0) if pieces else None
+        # No time-stretching: the phase vocoder it needs leaves a metallic edge on
+        # speech, and engines already pace themselves. Trim, pauses, loudness only.
+        out = polish_clips(clips, sr, pause_ms, None)
         return torch.from_numpy(out).unsqueeze(0), sr
 
 
