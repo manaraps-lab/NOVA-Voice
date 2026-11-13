@@ -321,14 +321,38 @@ def change_tempo(audio, sample_rate: int, rate: float):
         return audio
 
 
+def pitch_ratio(semitones: float, max_den: int = 24) -> tuple[int, int]:
+    """The pitch factor 2**(n/12) as a small fraction ``p/q``.
+
+    The resampler's work grows with ``p * q``; the exact factor is irrational,
+    and handing it over as two large integers once asked for a 9 GB buffer.
+    """
+    from fractions import Fraction
+    fr = Fraction(2.0 ** (float(semitones) / 12.0)).limit_denominator(max_den)
+    return fr.numerator, fr.denominator
+
+
 def shift_pitch(audio, sample_rate: int, semitones: float):
     """Shift pitch keeping duration. Returns the input unchanged on any failure."""
     if abs(semitones) < 0.05:
         return audio
+    p, q = pitch_ratio(semitones)
+    if p == q:
+        return audio
     try:
+        import torch
         import torchaudio.functional as F
         x = audio if audio.ndim == 2 else audio.unsqueeze(0)
-        return F.pitch_shift(x, sample_rate, semitones)
+        length = x.shape[-1]
+        n_fft, hop = 1024, 256
+        window = torch.hann_window(n_fft)
+        spec = torch.stft(x, n_fft, hop, window=window, return_complex=True)
+        advance = torch.linspace(0, 3.14159265 * hop, spec.shape[-2])[..., None]
+        stretched = torch.istft(F.phase_vocoder(spec, q / p, advance), n_fft, hop, window=window)
+        out = F.resample(stretched, p, q)      # small integer ratio: a tiny kernel
+        if out.shape[-1] >= length:
+            return out[..., :length]
+        return torch.nn.functional.pad(out, (0, length - out.shape[-1]))
     except Exception:  # noqa: BLE001 — DSP is optional; never lose the audio
         logger.warning("nova: pitch shift unavailable, audio left unchanged", exc_info=True)
         return audio
@@ -860,7 +884,7 @@ class NovaJob:
             audio = audio.unsqueeze(0)
         if not eng["native_speed"]:
             audio = change_tempo(audio, sr, speed)
-        return shift_pitch(audio, sr, semitones)
+        return audio
 
     def _make_anchor(self, audio, text: str, sr: int) -> None:
         """Keep the first chunk as the voice reference for the engines that can follow one."""
@@ -899,7 +923,9 @@ class NovaJob:
         # No time-stretching: the phase vocoder it needs leaves a metallic edge on
         # speech, and engines already pace themselves. Trim, pauses, loudness only.
         out = polish_clips(clips, sr, pause_ms, None)
-        return torch.from_numpy(out).unsqueeze(0), sr
+        joined = torch.from_numpy(out).unsqueeze(0)
+        # One pitch shift over the whole take (not one per chunk): cheaper and no seams.
+        return shift_pitch(joined, sr, effective_semitones(self.settings)), sr
 
 
 class NovaJobManager:

@@ -537,3 +537,18 @@ def test_release_other_engines_keeps_the_one_in_use():
     finally:
         tb._ENGINE_INSTANCES.clear()
         tb._ENGINE_INSTANCES.update(saved)
+
+
+def test_pitch_ratio_stays_small_so_the_resampler_never_needs_gigabytes():
+    steps = [x / 2 for x in range(-16, 17)] + [0.37, -0.83, 1.23]
+    for st in steps:
+        p, q = nj.pitch_ratio(st)
+        assert p * q <= 24 * 60, (st, p, q)          # the failing case was ~44100 x 44000
+        assert abs((p / q) - 2 ** (st / 12)) < 0.03, (st, p, q)
+    assert nj.pitch_ratio(0.0) == (1, 1)
+
+
+def test_pitch_shift_ignores_tiny_shifts_without_touching_audio():
+    marker = object()
+    assert nj.shift_pitch(marker, 24000, 0.0) is marker
+    assert nj.shift_pitch(marker, 24000, 0.04) is marker
